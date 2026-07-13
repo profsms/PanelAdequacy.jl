@@ -97,6 +97,9 @@ function _statistic_lines(pathology::Symbol, s::NamedTuple)
         haskey(s, :beta_corr) &&
             push!(lines, @sprintf("Pilot: beta* = %.4g -> corrected beta0 = %.4g (se %.3g)",
                                   s.beta_star, s.beta_corr, s.se_beta_corr))
+        haskey(s, :psi_hat) && s.psi_hat != 1.0 &&
+            push!(lines, @sprintf("Cluster-robust standardization: psi_hat = %.3f (|eta|, breakdown deflated by 1/sqrt(psi) = %.3f)",
+                                  s.psi_hat, 1 / sqrt(s.psi_hat)))
         haskey(s, :eta_upper) &&
             push!(lines, @sprintf("Conservative |eta| (upper-bound pilot) = %.3f",
                                   s.eta_upper))

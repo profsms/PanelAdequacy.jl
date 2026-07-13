@@ -1,7 +1,7 @@
 name = "PanelAdequacy"
 uuid = "163e143c-5c5b-43ee-8a66-46cf3a350496"
 authors = ["Stanislaw M. S. Halkiewicz <smsh@duck.com>"]
-version = "0.1.0"
+version = "0.2.0"
 
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"

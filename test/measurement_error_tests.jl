@@ -1,10 +1,11 @@
 # =============================================================================
 # Module B — measurement-error adequacy (Paper B: paper_b_fe_eiv_JoE.tex)
 # Reference cases: spec §7.2 (V-Dem two-pole + gate-1 headline) and the PSID
-# application (Paper B §app-psid). Threshold machinery must be exact-inversion /
-# quadratic — NEVER the discarded linear surrogate. The recorded bd05 column in
-# eiv_vdem_results.csv is linear-contaminated; breakdown expectations below are
-# the exact-inversion values (paper Definition def-breakdown).
+# application (Paper B §7.2). Threshold machinery must be exact-inversion /
+# quadratic — NEVER the discarded linear surrogate. Breakdown expectations are
+# the FIXED-POINT values lambda† = t*/(t* + eta†) (paper Def. def-breakdown);
+# cluster expectations are the by-unit CRVE psi_hat of Remark rem-cluster,
+# matching Table tab-vdem / tab-psid of the paper.
 # =============================================================================
 
 "Extract a V-Dem spec (y, x, x_sd complete cases) from the parsed CSV columns."
@@ -60,12 +61,21 @@ end
         @test rep.eta ≈ 0.23640 rtol = 5e-3
         @test rep.implied_size ≈ 0.05643 atol = 5e-4
         @test rep.threshold ≈ 0.652 atol = 5e-4
-        @test rep.breakdown ≈ 0.720 atol = 2e-3     # exact-inversion, NOT the stale 0.816
+        @test rep.breakdown ≈ 0.762 atol = 2e-3     # fixed point t*/(t*+eta†); paper Table 3
+        # point verdict is exactly equivalent to lambda_hat >= breakdown
+        @test (rep.statistic.lambda_hat >= rep.breakdown) ==
+              (rep.verdict === :CERTIFIED)
         @test rep.verdict === :CERTIFIED
         # formal (conservative) certificate also passes for polyarchy
         repc = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd)
         @test repc.verdict === :CERTIFIED
         @test repc.statistic.eta_upper > repc.eta
+        # cluster-robust (country CRVE): paper Table 3 psi_hat = 19.2, still certified
+        repcr = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd,
+                             pilot=:point, cluster=:crve)
+        @test repcr.statistic.psi_hat ≈ 19.18 rtol = 1e-2
+        @test repcr.implied_size ≈ 0.050 atol = 1e-3
+        @test repcr.verdict === :CERTIFIED
 
         # --- legislative constraints: FLAGGED ---
         s = vdem_spec(cols, :v2xlg_legcon, :v2xlg_legcon_sd)
@@ -74,8 +84,16 @@ end
         @test rep.statistic.lambda_hat ≈ 0.5472 atol = 1e-3
         @test rep.eta ≈ 0.8853 rtol = 5e-3
         @test rep.implied_size ≈ 0.1435 atol = 1e-3
-        @test rep.breakdown ≈ 0.666 atol = 2e-3     # exact-inversion, NOT the stale 0.781
+        @test rep.breakdown ≈ 0.621 atol = 2e-3     # fixed point; paper Table 3
         @test rep.verdict === :FLAGGED
+        # the paper's middle case: flagged iid, CERTIFIED under country clustering
+        repcr = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd,
+                             pilot=:point, cluster=:crve)
+        @test repcr.statistic.psi_hat ≈ 24.05 rtol = 1e-2
+        @test repcr.implied_size ≈ 0.054 atol = 1e-3
+        @test repcr.verdict === :CERTIFIED
+        @test (repcr.statistic.lambda_hat >= repcr.breakdown) ==
+              (repcr.verdict === :CERTIFIED)
 
         # THE naive-pilot danger (Prop. prop-pilot(i) / Design 3a, on real data):
         # the attenuated pilot CERTIFIES this genuinely-failing specification
@@ -91,9 +109,16 @@ end
         @test rep.statistic.lambda_hat ≈ 0.4125 atol = 1e-3
         @test rep.eta ≈ 12.10 rtol = 1e-2
         @test rep.implied_size ≈ 1.0 atol = 1e-6
-        @test rep.breakdown ≈ 0.968 atol = 2e-3
+        @test rep.breakdown ≈ 0.929 atol = 2e-3     # fixed point; paper Table 3
         @test rep.verdict === :FLAGGED
         @test any(occursin("quadratic", n) for n in rep.notes)   # far-out honesty note
+        # flag SURVIVES clustering: psi_hat = 25.2 but eta_CR = 2.4, size 67%
+        repcr = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd,
+                             pilot=:point, cluster=:crve)
+        @test repcr.statistic.psi_hat ≈ 25.21 rtol = 1e-2
+        @test repcr.eta ≈ 2.41 rtol = 1e-2
+        @test repcr.implied_size ≈ 0.674 atol = 3e-3
+        @test repcr.verdict === :FLAGGED
     end
 
     @testset "reference case 2b: gate-1 headline (spec §7.2, vdem_gate1.csv)" begin
@@ -116,6 +141,8 @@ end
 
         # self-consistent breakdown (fixed point; paper main text: 0.71)
         @test breakdown_reliability(bstar, sigma, tau2) ≈ 0.707 atol = 2e-3
+        # cluster-robust breakdown at the paper's person-cluster psi = 2.33: 0.61
+        @test breakdown_reliability(bstar, sigma, tau2; psi=2.330) ≈ 0.613 atol = 2e-3
 
         # within reliability 0.65 (Bound-Krueger first difference): FLAGGED
         rep = eiv_adequacy(; beta_star=bstar, sigma=sigma, tau_star2=tau2,
@@ -123,6 +150,14 @@ end
         @test rep.eta ≈ 0.848 atol = 2e-3            # paper: |eta| = 0.85
         @test rep.implied_size ≈ 0.1356 atol = 1e-3  # paper: 13.6%
         @test rep.verdict === :FLAGGED
+        # ... but CERTIFIED under person clustering (paper Table 4: size 8.6%)
+        repcr = eiv_adequacy(; beta_star=bstar, sigma=sigma, tau_star2=tau2,
+                             n=n, d_K=d_K, reliability=0.65, pilot=:point,
+                             psi=2.330)
+        @test repcr.eta ≈ 0.556 atol = 2e-3
+        @test repcr.implied_size ≈ 0.086 atol = 1e-3
+        @test repcr.verdict === :CERTIFIED
+        @test repcr.breakdown ≈ 0.613 atol = 2e-3
 
         # level reliability 0.82: point pass, formal certificate FAILS (paper ddagger note)
         repp = eiv_adequacy(; beta_star=bstar, sigma=sigma, tau_star2=tau2,
@@ -152,6 +187,8 @@ end
                                                 sigma_nu=0.1, reliability=0.9)
         @test_throws ArgumentError eiv_adequacy(y, x, uid, tid; reliability=1.2)
         @test_throws ArgumentError eiv_adequacy(y, x, uid, tid; codelow=x)  # needs both
+        @test_throws ArgumentError eiv_adequacy(y, x, uid, tid;
+                                                reliability=0.9, cluster=:bogus)
 
         # lambda <= 0 (noise swamps signal): hard FLAG with exact size 1
         rephard = eiv_adequacy(y, x, uid, tid; sigma_nu=100.0)

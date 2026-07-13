@@ -40,7 +40,7 @@ include("staggered_tests.jl")
 
 @testset "bundled datasets API" begin
     @test Set(datasets()) == Set(["vdem_gate1", "eiv_vdem_panel",
-        "psid_wages_panel", "castle_panel", "divorce_panel"])
+        "psid_wages_panel", "castle_panel", "divorce_panel", "f_score_panel"])
     @test isfile(datapath("castle_panel"))
     @test isfile(datapath("castle_panel.csv"))
     @test_throws ArgumentError datapath("nope")
@@ -54,6 +54,22 @@ include("staggered_tests.jl")
                        d.iso[keep], d.year[keep];
                        sigma_nu=Float64.(d.v2x_polyarchy_sd[keep]), pilot=:point)
     @test rep.statistic.lambda_hat ≈ 0.8984 atol = 1e-3
+
+    # Paper A empirical application (Piotroski F-Score / Visegrad panel) drives
+    # leverage_report directly from the bundled object, reproducing Table 2/3.
+    fp = load_dataset("f_score_panel")
+    @test length(fp.uid) == 217 && length(unique(fp.uid)) == 19
+    @test eltype(fp.uid) == String && eltype(fp.country) == String
+    fs = Float64.(fp.fscore); logr = log1p.(Float64.(fp.ret))
+    rB = leverage_report(logr, fs, fp.uid, Float64.(fp.year))          # Spec B (log return)
+    @test rB.design.n == 217 && rB.design.d_K == 33
+    @test rB.statistic.beta ≈ -0.00147 atol = 5e-5                     # paper -0.00147
+    @test rB.statistic.se_hc2 ≈ 0.0153 atol = 5e-4                     # LO SE
+    @test rB.design.tau_star2 ≈ 559 atol = 1                          # pooled tau^2 ~ 559
+    mE = fp.country .== "Poland"
+    rE = leverage_report(logr[mE], fs[mE], fp.uid[mE], Float64.(fp.year[mE]))  # Spec E
+    @test rE.design.n == 122
+    @test abs(rE.statistic.beta / rE.statistic.se_hc2) ≈ 0.61 atol = 0.02      # headline |t|
 end
 
 @testset "PanelAdequacy shared infrastructure" begin

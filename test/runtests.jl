@@ -37,6 +37,7 @@ end
 include("leverage_tests.jl")
 include("measurement_error_tests.jl")
 include("staggered_tests.jl")
+include("cycle_tests.jl")
 
 @testset "bundled datasets API" begin
     @test Set(datasets()) == Set(["vdem_gate1", "eiv_vdem_panel",

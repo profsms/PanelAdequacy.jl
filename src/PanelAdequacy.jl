@@ -1,29 +1,34 @@
 """
     PanelAdequacy
 
-Panel-data inference-adequacy diagnostics. Certifies whether naive inference
-on an ALREADY-ESTIMATED fixed-effect design is size-controlled, and if not,
-by how much (spec §0). Diagnostic only: it consumes fitted output, implements
-no remedies, and points to them.
+Panel-data inference-adequacy diagnostics and exact contrast inference for
+fixed-effect designs. Paper A's engine constructs nuisance-annihilating
+contrasts and sign-flip confidence sets; the remaining modules diagnose
+variance-estimator, measurement-error, and TWFE-heterogeneity failures.
 
-Modules (one per source paper):
-- Module A — leverage / variance diagnostics (Paper A)
-- Module B — measurement-error adequacy (Paper B)
-- Module C — staggered-DiD / TWFE-heterogeneity adequacy (Paper C)
+Current source map:
+- Paper A — exact contrast inference under concentrated identifying variation
+- Paper B — measurement-error adequacy
+- Paper C — staggered-DiD / TWFE-heterogeneity adequacy
+- diffuse companion — leverage / variance diagnostics
 """
 module PanelAdequacy
 
 using Printf
 using Statistics
 using LinearAlgebra
+using Random
 using SpecialFunctions: erfc, erfcinv
 
-export DesignSummary, design_summary, twoway_demean, fe_dimension
+export DesignSummary, design_summary, twoway_demean, multiway_demean, fe_dimension
 export AdequacyReport
 export leverage_report, fe_leverage
 export eiv_adequacy, reliability_from_interval, reliability_from_ratio,
-       breakdown_reliability
-export twfe_design, twfe_adequacy
+       breakdown_reliability, cluster_diagnostics, projection_compatibility,
+       tau2_crit, eta_finite_n
+export twfe_design, twfe_adequacy, twfe_gammas
+export cycle_report, cycle_capture, cycle_contrasts, contrast_system,
+       support_compatibility, signflip_test, signflip_interval
 export datasets, datapath, load_dataset
 
 include("design.jl")
@@ -31,6 +36,7 @@ include("normal.jl")
 include("leverage.jl")
 include("measurement_error.jl")
 include("staggered_weights.jl")
+include("cycle.jl")
 include("datasets.jl")
 
 # =============================================================================
@@ -38,9 +44,10 @@ include("datasets.jl")
 # =============================================================================
 
 const PATHOLOGY_TITLES = Dict(
-    :leverage            => "Leverage / Variance (Paper A)",
+    :leverage            => "Leverage / Variance (diffuse-regime companion)",
     :measurement_error   => "Measurement Error (Paper B)",
     :twfe_heterogeneity  => "TWFE Heterogeneity (Paper C)",
+    :cycle_inference     => "Concentrated Identifying Variation (Paper A)",
 )
 
 """
@@ -49,7 +56,8 @@ const PATHOLOGY_TITLES = Dict(
 Unified result object returned by every diagnostic (spec §2.2).
 
 Fields:
-- `pathology`    : `:leverage` | `:measurement_error` | `:twfe_heterogeneity`
+- `pathology`    : `:cycle_inference` | `:leverage` | `:measurement_error` |
+                   `:twfe_heterogeneity`
 - `design`       : the [`DesignSummary`](@ref)
 - `statistic`    : pathology-specific statistic(s) as a `NamedTuple`
                    (e.g. `(lambda_hat=..., )`, `(Gamma=..., neg_share=...)`)
@@ -57,7 +65,7 @@ Fields:
 - `threshold`    : critical value at the user's `(alpha, delta)`
 - `breakdown`    : breakdown reliability / threshold
 - `implied_size` : implied size of the nominal-`alpha` test
-- `verdict`      : `:CERTIFIED` | `:FLAGGED` | `:INCONCLUSIVE`
+- `verdict`      : `:CERTIFIED` | `:POINT_PASS` | `:FLAGGED` | `:INCONCLUSIVE`
 - `alpha`, `delta` : tolerances used
 - `notes`        : honesty caveats triggered (e.g. "conservative pilot used")
 """
@@ -78,7 +86,7 @@ struct AdequacyReport
                             breakdown, implied_size, verdict, alpha, delta, notes)
         haskey(PATHOLOGY_TITLES, pathology) ||
             throw(ArgumentError("unknown pathology :$pathology"))
-        verdict in (:CERTIFIED, :FLAGGED, :INCONCLUSIVE) ||
+        verdict in (:CERTIFIED, :POINT_PASS, :FLAGGED, :INCONCLUSIVE) ||
             throw(ArgumentError("unknown verdict :$verdict"))
         new(pathology, design, statistic, eta, threshold, breakdown,
             implied_size, verdict, alpha, delta, notes)
@@ -97,9 +105,20 @@ function _statistic_lines(pathology::Symbol, s::NamedTuple)
         haskey(s, :beta_corr) &&
             push!(lines, @sprintf("Pilot: beta* = %.4g -> corrected beta0 = %.4g (se %.3g)",
                                   s.beta_star, s.beta_corr, s.se_beta_corr))
-        haskey(s, :psi_hat) && s.psi_hat != 1.0 &&
-            push!(lines, @sprintf("Cluster-robust standardization: psi_hat = %.3f (|eta|, breakdown deflated by 1/sqrt(psi) = %.3f)",
-                                  s.psi_hat, 1 / sqrt(s.psi_hat)))
+        if haskey(s, :psi_hat) && s.psi_hat != 1.0
+            push!(lines, @sprintf("Cluster-robust: psi_hat = %.3f, s_CR = %.4g, t^CR = %.3f (|eta|, breakdown deflated by 1/sqrt(psi) = %.3f)",
+                                  s.psi_hat, s.s_CR, s.t_CR, 1 / sqrt(s.psi_hat)))
+            if haskey(s, :cluster)
+                c = s.cluster
+                push!(lines, @sprintf("  cluster design: G = %d, max size = %d, max_g A_g/tau*2 = %.3f, d_ne/G = %.3f%s",
+                                      c.G, c.max_size, c.max_energy, c.ratio_ne,
+                                      isempty(c.nested) ? "" : " (nested: " * join(c.nested, ", ") * ")"))
+                haskey(c, :projection_ratio) &&
+                    push!(lines, isfinite(c.projection_ratio) ?
+                          @sprintf("  direct projection compatibility chi_proj = %.5f", c.projection_ratio) :
+                          "  direct projection compatibility chi_proj = not computed (allocation guard)")
+            end
+        end
         haskey(s, :eta_upper) &&
             push!(lines, @sprintf("Conservative |eta| (upper-bound pilot) = %.3f",
                                   s.eta_upper))
@@ -108,26 +127,69 @@ function _statistic_lines(pathology::Symbol, s::NamedTuple)
         haskey(s, :neg_share) &&
             (line *= @sprintf("   negative-weight share = %.1f%%", 100 * s.neg_share))
         push!(lines, line)
+        haskey(s, :Gamma_cmb) &&
+            push!(lines, @sprintf("  restricted ladder: Gamma_c+e = %.3f | Gamma_evt = %.3f | Gamma_coh = %.3f",
+                                  s.Gamma_cmb, s.Gamma_evt, s.Gamma_coh))
         haskey(s, :Gamma_CR) &&
-            push!(lines, @sprintf("Cluster-robust Gamma_CR = %.3f (psi_hat = %.3f)",
-                                  s.Gamma_CR, s.psi_hat))
+            push!(lines, @sprintf("Cluster-robust (psi_hat = %.3f): Gamma_c+e,CR = %.3f | Gamma_CR = %.3f",
+                                  s.psi_hat, s.Gamma_cmb_CR, s.Gamma_CR))
         haskey(s, :beta) &&
             push!(lines, @sprintf("TWFE beta_hat = %.4g   sigma = %.4g", s.beta, s.sigma))
-        haskey(s, :cohort_sd_raw) &&
-            push!(lines, @sprintf("Cohort dispersion: raw sd %.4g -> shrunk %.4g (factor %.3f)",
-                                  s.cohort_sd_raw, s.cohort_sd_shrunk, s.shrink_factor))
-        haskey(s, :eta_worst) &&
-            push!(lines, @sprintf("Worst-case |eta| (shrunk pilot) = %.3g", s.eta_worst))
+        haskey(s, :pilot_cmb) &&
+            push!(lines, @sprintf("Covariance-corrected pilots c_S/sigma: c+e = %.3g | evt = %.3g | coh = %.3g",
+                                  s.pilot_cmb, s.pilot_evt, s.pilot_coh))
+        if haskey(s, :size_cmb)
+            l = @sprintf("Worst-case size: combined-class = %.1f%% (headline) | cohort %.1f%% | event %.1f%%",
+                         100*s.size_cmb, 100*s.size_coh, 100*s.size_evt)
+            push!(lines, l)
+        end
+        if haskey(s, :boot) && s.boot !== nothing
+            b = s.boot
+            push!(lines, @sprintf("  wild bootstrap (B=%d): combined median %.1f%%, 95%% [%.1f, %.1f]; psi in [%.2f, %.2f]",
+                                  b.n, 100*b.cmb_med, 100*b.cmb_lo, 100*b.cmb_hi, b.psi_lo, b.psi_hi))
+        end
+        haskey(s, :size_realized) &&
+            push!(lines, @sprintf("Realized-profile size (CR) = %.1f%%", 100*s.size_realized))
     elseif pathology === :leverage && haskey(s, :max_leverage)
         line = @sprintf("Max leverage max_i H_ii = %.3f", s.max_leverage)
         haskey(s, :leverage_spread) &&
             (line *= @sprintf(" | spread hmax/hmin = %.2f", s.leverage_spread))
         push!(lines, line)
-        if haskey(s, :se_cjn)
-            push!(lines, @sprintf("SE(beta): CJN %.4g | HC0 %.4g | HC2/LO %.4g | HC3 %.4g",
-                                  s.se_cjn, s.se_hc0, s.se_hc2, s.se_hc3))
-            push!(lines, @sprintf("beta_hat = %.4g   t (HC2/LO) = %.2f",
+        haskey(s, :lambda_n) &&
+            push!(lines, @sprintf("Design conditions: lambda_n = %.4f (N_eff = %.1f) | max|H_ii - rho| = %.3f",
+                                  s.lambda_n, s.n_eff, s.uniform_leverage_gap))
+        haskey(s, :score_lambda_n) && isfinite(s.score_lambda_n) &&
+            push!(lines, @sprintf("Realized score concentration: lambda_score = %.4f (N_eff,score = %.1f)",
+                                  s.score_lambda_n, s.score_n_eff))
+        if haskey(s, :se_df)
+            push!(lines, @sprintf("SE(beta): df-corrected %.4g | HC0 %.4g | HC2 %.4g | HC3 %.4g",
+                                  s.se_df, s.se_hc0, s.se_hc2, s.se_hc3))
+            push!(lines, @sprintf("beta_hat = %.4g   t (HC2) = %.2f",
                                   s.beta, s.t_hc2))
+        end
+    elseif pathology === :cycle_inference && haskey(s, :kappa)
+        push!(lines, @sprintf("Concentration: lambda_n = %.4f (N_eff = %.1f)",
+                              s.lambda_n, s.n_eff))
+        haskey(s, :score_lambda_n) &&
+            push!(lines, @sprintf("Realized score concentration: lambda_score = %.4f (N_eff,score = %.1f)",
+                                  s.score_lambda_n, s.score_n_eff))
+        ctext = haskey(s, :effective_C) && s.effective_C != s.C ?
+                @sprintf("%d supports (%d treatment-loaded)", s.C, s.effective_C) :
+                @sprintf("%d supports", s.C)
+        push!(lines, @sprintf("Capture kappa_C = %.4f over %s (cycle-space dim %d) | capture-implied SE ratio %.3fx | max share %.3f",
+                              s.kappa, ctext, s.cycle_dim, s.se_price, s.max_share))
+        if s.beta_tilde !== nothing
+            l = @sprintf("Contrast estimate beta~ = %.4g", s.beta_tilde)
+            if s.ci_lo !== nothing
+                level = haskey(s, :ci_level) ? s.ci_level : 0.95
+                l *= @sprintf("   exact %.0f%% set: [%.4g, %.4g]%s",
+                              100 * level, s.ci_lo, s.ci_hi,
+                              haskey(s, :ci_grid_truncated) && s.ci_grid_truncated ?
+                              " (conservative: grid boundary reached)" : "")
+            else
+                l *= "   exact set: EMPTY at this level"
+            end
+            push!(lines, l)
         end
     else
         for k in keys(s)
@@ -162,7 +224,12 @@ function Base.show(io::IO, ::MIME"text/plain", r::AdequacyReport)
         @printf(io, "Implied size of nominal %.0f%% test: %.1f%%\n",
                 100 * r.alpha, 100 * r.implied_size)
     if r.verdict === :CERTIFIED
-        @printf(io, "VERDICT: CERTIFIED at delta=%.2g", r.delta)
+        g = haskey(r.statistic, :gamma) ? r.statistic.gamma : nothing
+        g === nothing ? @printf(io, "VERDICT: CERTIFIED at delta=%.2g", r.delta) :
+            @printf(io, "VERDICT: FORMALLY CERTIFIED at (alpha, delta, gamma) = (%.2g, %.2g, %.2g)",
+                    r.alpha, r.delta, g)
+    elseif r.verdict === :POINT_PASS
+        @printf(io, "VERDICT: POINT PASS at delta=%.2g (descriptive — not a certificate)", r.delta)
     elseif r.verdict === :FLAGGED
         @printf(io, "VERDICT: FLAGGED at delta=%.2g", r.delta)
     else

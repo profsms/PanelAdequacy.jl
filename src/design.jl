@@ -8,7 +8,7 @@
     DesignSummary
 
 Design-level summary of a two-way fixed-effect panel (spec §2.1). Reused by
-all three diagnostic modules and useful standalone as a pre-outcome design
+all four inference/diagnostic modules and useful standalone as a pre-outcome design
 vetting tool.
 
 Fields:
@@ -30,6 +30,17 @@ struct DesignSummary
     rho::Float64
     ncomponents::Int
     tau_star2::Union{Nothing,Float64}
+end
+
+"Dense 1-based integer codes for a single id vector, in order of first appearance."
+function _codes(ids::AbstractVector)
+    isempty(ids) && throw(ArgumentError("empty id vector"))
+    m = Dict{eltype(ids),Int}()
+    out = Vector{Int}(undef, length(ids))
+    for k in eachindex(ids)
+        out[k] = get!(m, ids[k], length(m) + 1)
+    end
+    return out
 end
 
 "Map raw unit/time identifiers (any type) to dense integer codes 1:N, 1:T."
@@ -122,6 +133,72 @@ function _twoway_demean(x::Vector{Float64}, uid::Vector{Int}, tid::Vector{Int},
         end
     end
     converged || @warn "two-way demeaning did not converge within $maxit iterations"
+    return w
+end
+
+"""
+    multiway_demean(x, fe_levels...; tol=1e-10, maxit=10_000)
+
+Residualize `x` with respect to any number of categorical fixed-effect
+dimensions by alternating projections. This is the scalable counterpart of
+forming the full dummy matrix and is used by [`contrast_system`](@ref) for
+applications with more than two fixed effects.
+"""
+function multiway_demean(x::AbstractVector{<:Real},
+                         fe_levels::AbstractVector...;
+                         tol::Real=1e-10, maxit::Integer=10_000)
+    return _multiway_demean(Float64.(x), collect(fe_levels);
+                            tol=tol, maxit=maxit)
+end
+
+function _multiway_demean(x::Vector{Float64}, fe_levels::AbstractVector;
+                          tol::Real=1e-10, maxit::Integer=10_000)
+    n = length(x)
+    isempty(fe_levels) && throw(ArgumentError("at least one fixed-effect dimension is required"))
+    tol > 0 || throw(ArgumentError("tol must be positive"))
+    maxit > 0 || throw(ArgumentError("maxit must be positive"))
+
+    codes = Vector{Vector{Int}}(undef, length(fe_levels))
+    counts = Vector{Vector{Int}}(undef, length(fe_levels))
+    sums = Vector{Vector{Float64}}(undef, length(fe_levels))
+    for j in eachindex(fe_levels)
+        ids = fe_levels[j]
+        length(ids) == n || throw(ArgumentError(
+            "fixed-effect dimension $j has length $(length(ids)); expected $n"))
+        codes[j] = _codes(ids)
+        ng = maximum(codes[j])
+        counts[j] = zeros(Int, ng)
+        for g in codes[j]
+            counts[j][g] += 1
+        end
+        sums[j] = zeros(Float64, ng)
+    end
+
+    w = copy(x)
+    converged = false
+    for _ in 1:maxit
+        max_update = 0.0
+        for j in eachindex(codes)
+            c = codes[j]
+            s = sums[j]
+            fill!(s, 0.0)
+            @inbounds for k in eachindex(w)
+                s[c[k]] += w[k]
+            end
+            @inbounds for g in eachindex(s)
+                s[g] /= counts[j][g]
+                max_update = max(max_update, abs(s[g]))
+            end
+            @inbounds for k in eachindex(w)
+                w[k] -= s[c[k]]
+            end
+        end
+        if max_update < tol
+            converged = true
+            break
+        end
+    end
+    converged || @warn "multiway demeaning did not converge within $maxit iterations"
     return w
 end
 

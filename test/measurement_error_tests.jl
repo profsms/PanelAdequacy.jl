@@ -39,9 +39,26 @@ end
 
     @testset "reliability helpers" begin
         @test reliability_from_interval([0.1, 0.2], [0.3, 0.5]) ≈ [0.1, 0.15]
-        # PSID pathway: sigma_nu = sqrt((1-r)/r) * within-sd
-        @test reliability_from_ratio(0.8, 2.0) ≈ sqrt(0.25) * 2.0
+        # Observed-scale reliability: Var(nu) = (1-r) Var(X*)
+        @test reliability_from_ratio(0.8, 2.0) ≈ sqrt(0.2) * 2.0
+        # The old formula is still available when the supplied SD is latent signal.
+        @test reliability_from_ratio(0.8, 2.0; scale=:signal) ≈ sqrt(0.25) * 2.0
         @test_throws ArgumentError reliability_from_ratio(1.2, 2.0)
+        @test_throws ArgumentError reliability_from_ratio(0.8, -1.0)
+        @test_throws ArgumentError reliability_from_interval([0.3], [0.2])
+    end
+
+    @testset "primitive threshold: exact inversion is the default" begin
+        rho, c2, beta0, sigma = 0.2, 3.0, 0.7, 1.4
+        eta_dag = PD._eta_dagger(0.05, 0.05)
+        expected = beta0^2 * c2^2 * (1 - rho) / (sigma^2 * eta_dag^2) - c2
+        @test tau2_crit(rho, c2, beta0, sigma) ≈ expected atol=1e-12
+        z = PD._norminv(0.975)
+        quad = beta0^2 * c2^2 * (1 - rho) * z * PD._normpdf(z) /
+               (sigma^2 * 0.05) - c2
+        @test tau2_crit(rho, c2, beta0, sigma; method=:quadratic) ≈ quad atol=1e-12
+        @test tau2_crit(rho, c2, beta0, sigma) >
+              tau2_crit(rho, c2, beta0, sigma; method=:quadratic)
     end
 
     @testset "reference case 2a: V-Dem two-pole (spec §7.2, eiv_vdem_results static rows)" begin
@@ -64,8 +81,8 @@ end
         @test rep.breakdown ≈ 0.762 atol = 2e-3     # fixed point t*/(t*+eta†); paper Table 3
         # point verdict is exactly equivalent to lambda_hat >= breakdown
         @test (rep.statistic.lambda_hat >= rep.breakdown) ==
-              (rep.verdict === :CERTIFIED)
-        @test rep.verdict === :CERTIFIED
+              (rep.verdict === :POINT_PASS)
+        @test rep.verdict === :POINT_PASS   # point pilot: a point pass, NOT a certificate
         # formal (conservative) certificate also passes for polyarchy
         repc = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd)
         @test repc.verdict === :CERTIFIED
@@ -75,7 +92,9 @@ end
                              pilot=:point, cluster=:crve)
         @test repcr.statistic.psi_hat ≈ 19.18 rtol = 1e-2
         @test repcr.implied_size ≈ 0.050 atol = 1e-3
-        @test repcr.verdict === :CERTIFIED
+        @test repcr.verdict === :POINT_PASS
+        @test haskey(repcr.statistic.cluster, :projection_ratio)
+        @test repcr.statistic.cluster.projection_ratio ≈ 0.007 atol = 8e-4
 
         # --- legislative constraints: FLAGGED ---
         s = vdem_spec(cols, :v2xlg_legcon, :v2xlg_legcon_sd)
@@ -91,15 +110,15 @@ end
                              pilot=:point, cluster=:crve)
         @test repcr.statistic.psi_hat ≈ 24.05 rtol = 1e-2
         @test repcr.implied_size ≈ 0.054 atol = 1e-3
-        @test repcr.verdict === :CERTIFIED
+        @test repcr.verdict === :POINT_PASS
         @test (repcr.statistic.lambda_hat >= repcr.breakdown) ==
-              (repcr.verdict === :CERTIFIED)
+              (repcr.verdict === :POINT_PASS)
 
         # THE naive-pilot danger (Prop. prop-pilot(i) / Design 3a, on real data):
         # the attenuated pilot CERTIFIES this genuinely-failing specification
         repn = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd, pilot=:naive)
         @test repn.eta ≈ 0.8853 * 0.5472 rtol = 1e-2   # eta understated by factor lambda
-        @test repn.verdict === :CERTIFIED               # the exact error Paper B prevents
+        @test repn.verdict === :POINT_PASS              # the exact error Paper B prevents
         @test any(occursin("ANTI-CONSERVATIVE", n) for n in repn.notes)
 
         # --- judicial constraints: FLAGGED decisively, exact size 1.00 ---
@@ -156,14 +175,14 @@ end
                              psi=2.330)
         @test repcr.eta ≈ 0.556 atol = 2e-3
         @test repcr.implied_size ≈ 0.086 atol = 1e-3
-        @test repcr.verdict === :CERTIFIED
+        @test repcr.verdict === :POINT_PASS
         @test repcr.breakdown ≈ 0.613 atol = 2e-3
 
         # level reliability 0.82: point pass, formal certificate FAILS (paper ddagger note)
         repp = eiv_adequacy(; beta_star=bstar, sigma=sigma, tau_star2=tau2,
                             n=n, d_K=d_K, reliability=0.82, pilot=:point)
         @test repp.implied_size ≈ 0.0638 atol = 1e-3  # paper: 6.4%
-        @test repp.verdict === :CERTIFIED
+        @test repp.verdict === :POINT_PASS   # paper labels this row point pass / formal fail
         repf = eiv_adequacy(; beta_star=bstar, sigma=sigma, tau_star2=tau2,
                             n=n, d_K=d_K, reliability=0.82)   # default: conservative
         @test repf.verdict === :FLAGGED
@@ -187,6 +206,8 @@ end
                                                 sigma_nu=0.1, reliability=0.9)
         @test_throws ArgumentError eiv_adequacy(y, x, uid, tid; reliability=1.2)
         @test_throws ArgumentError eiv_adequacy(y, x, uid, tid; codelow=x)  # needs both
+        @test_throws ArgumentError eiv_adequacy(y, x, uid, tid; sigma_nu=[0.1, 0.2])
+        @test_throws ArgumentError eiv_adequacy(y, x, uid, tid; sigma_nu=-0.1)
         @test_throws ArgumentError eiv_adequacy(y, x, uid, tid;
                                                 reliability=0.9, cluster=:bogus)
 
@@ -204,7 +225,7 @@ end
         # lambda = 1 (no noise): eta = 0, certified at any pilot
         rep1 = eiv_adequacy(y, x, uid, tid; reliability=1.0, pilot=:point)
         @test rep1.eta == 0.0
-        @test rep1.verdict === :CERTIFIED
+        @test rep1.verdict === :POINT_PASS
     end
 
     @testset "report rendering (spec §2.2 format)" begin

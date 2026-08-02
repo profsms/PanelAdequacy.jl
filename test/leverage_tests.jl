@@ -1,6 +1,6 @@
 # =============================================================================
-# Module A — leverage / variance diagnostics (Paper A: arXiv 2607.05215)
-# No §7 reference case exists for Module A, so the harness rests on
+# Diffuse-regime leverage / variance diagnostics (superseded arXiv 2607.05215)
+# No current-paper reference case exists for this companion, so the harness rests on
 # (a) exact finite-sample identities verified against dense-matrix computation
 # (b) the paper's tabulated asymptotic size predictions (Tables 3 and 4)
 # =============================================================================
@@ -18,7 +18,7 @@ function dense_dummies(uid, tid, N, T)
     return D
 end
 
-@testset "Module A — leverage / variance (Paper A)" begin
+@testset "Diffuse companion — leverage / variance" begin
 
     @testset "normal-distribution helpers" begin
         @test PD._normcdf(0.0) == 0.5
@@ -66,7 +66,7 @@ end
         # x with two-way-demeaned part of CONSTANT magnitude: xt_it = c*s_i*r_t,
         # s, r balanced sign vectors -> full leverage H_ii = 1/T + 1/N uniform,
         # sum H_ii = N + T = d_K + 1, HC1 == HC2 exactly, and the SE ratios of
-        # Paper A Table 3 hold exactly: HC0/LO = sqrt(1-H), HC3/LO = 1/sqrt(1-H).
+        # The companion's Table 3 identities hold exactly.
         N, T = 6, 4
         s = [1, 1, 1, -1, -1, -1]; r = [1, 1, -1, -1]; c = 0.7
         uid = repeat(1:N, inner=T); tid = repeat(1:T, outer=N)
@@ -82,7 +82,7 @@ end
         @test st.se_hc1 ≈ st.se_hc2 rtol = 1e-8           # Remark 3.4, uniform leverage
         @test st.se_hc0 / st.se_hc2 ≈ sqrt(1 - Hbar) atol = 1e-8
         @test st.se_hc3 / st.se_hc2 ≈ 1 / sqrt(1 - Hbar) atol = 1e-8
-        @test st.se_cjn ≈ st.se_naive * sqrt(n / (n - (N + T - 1) - 1)) rtol = 1e-12
+        @test st.se_df ≈ st.se_naive * sqrt(n / (n - (N + T - 1) - 1)) rtol = 1e-12
     end
 
     @testset "against dense full-regression computation (unbalanced)" begin
@@ -108,7 +108,7 @@ end
         dof = n - d_K - 1
         xt_dense = (I - D * pinv(D' * D) * D') * x
         tau2 = sum(abs2, xt_dense)
-        se_cjn_dense = sqrt(rss / dof / tau2)
+        se_df_dense = sqrt(rss / dof / tau2)
         hc0 = sum(abs2.(xt_dense) .* abs2.(u_dense))
         hc2 = sum(abs2.(xt_dense) .* abs2.(u_dense) ./ (1 .- H_dense))
         hc3 = sum(abs2.(xt_dense) .* abs2.(u_dense) ./ (1 .- H_dense) .^ 2)
@@ -117,7 +117,7 @@ end
         st = rep.statistic
         @test st.beta ≈ beta_dense atol = 1e-8
         @test st.max_leverage ≈ maximum(H_dense) atol = 1e-8
-        @test st.se_cjn ≈ se_cjn_dense atol = 1e-10
+        @test st.se_df ≈ se_df_dense atol = 1e-10
         @test st.se_hc0 ≈ sqrt(hc0) / tau2 atol = 1e-10
         @test st.se_hc2 ≈ sqrt(hc2) / tau2 atol = 1e-10
         @test st.se_hc3 ≈ sqrt(hc3) / tau2 atol = 1e-10
@@ -151,7 +151,7 @@ end
         @test rep2.breakdown ≈ PD._rho_dagger(0.05, 0.05) atol = 1e-12
 
         out = sprint(show, MIME("text/plain"), rep2)
-        @test occursin("Leverage / Variance (Paper A)", out)
+        @test occursin("Leverage / Variance (diffuse-regime companion)", out)
         @test occursin("SE(beta)", out)
         @test occursin("VERDICT: FLAGGED", out)
 

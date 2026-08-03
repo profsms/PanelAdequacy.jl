@@ -18,14 +18,16 @@ using Printf
 using Statistics
 using LinearAlgebra
 using Random
+using SparseArrays
 using SpecialFunctions: erfc, erfcinv
 
 export DesignSummary, design_summary, twoway_demean, multiway_demean, fe_dimension
 export AdequacyReport
 export leverage_report, fe_leverage
+export score_concentration, applicable, adequacy_row
 export eiv_adequacy, reliability_from_interval, reliability_from_ratio,
        breakdown_reliability, cluster_diagnostics, projection_compatibility,
-       tau2_crit, eta_finite_n
+       tau2_crit, eta_finite_n, eiv_adequacy_summary
 export twfe_design, twfe_adequacy, twfe_gammas
 export cycle_report, cycle_capture, cycle_contrasts, contrast_system,
        support_compatibility, signflip_test, signflip_interval
@@ -37,6 +39,7 @@ include("leverage.jl")
 include("measurement_error.jl")
 include("staggered_weights.jl")
 include("cycle.jl")
+include("screen.jl")
 include("datasets.jl")
 
 # =============================================================================
@@ -178,6 +181,8 @@ function _statistic_lines(pathology::Symbol, s::NamedTuple)
                 @sprintf("%d supports", s.C)
         push!(lines, @sprintf("Capture kappa_C = %.4f over %s (cycle-space dim %d) | capture-implied SE ratio %.3fx | max share %.3f",
                               s.kappa, ctext, s.cycle_dim, s.se_price, s.max_share))
+        haskey(s, :reason) && !isempty(s.reason) &&
+            push!(lines, "Reason: " * s.reason)
         if s.beta_tilde !== nothing
             l = @sprintf("Contrast estimate beta~ = %.4g", s.beta_tilde)
             if s.ci_lo !== nothing

@@ -38,10 +38,12 @@ include("leverage_tests.jl")
 include("measurement_error_tests.jl")
 include("staggered_tests.jl")
 include("cycle_tests.jl")
+include("published_tests.jl")
 
 @testset "bundled datasets API" begin
     @test Set(datasets()) == Set(["vdem_gate1", "eiv_vdem_panel",
-        "psid_wages_panel", "castle_panel", "divorce_panel", "f_score_panel"])
+        "psid_wages_panel", "castle_panel", "divorce_panel", "f_score_panel",
+        "grunfeld_panel"])
     @test isfile(datapath("castle_panel"))
     @test isfile(datapath("castle_panel.csv"))
     @test_throws ArgumentError datapath("nope")
@@ -71,6 +73,12 @@ include("cycle_tests.jl")
     rE = leverage_report(logr[mE], fs[mE], fp.uid[mE], Float64.(fp.year[mE]))  # Spec E
     @test rE.design.n == 122
     @test abs(rE.statistic.beta / rE.statistic.se_hc2) ≈ 0.61 atol = 0.02      # headline |t|
+
+    gr = load_dataset("grunfeld_panel")
+    @test length(gr.invest) == 220 && length(unique(gr.firm)) == 11
+    @test eltype(gr.capital) == Float64 && eltype(gr.value) == Float64
+    gd = design_summary(gr.firm, gr.year; x=gr.capital, controls=gr.value)
+    @test gd.lambda_n ≈ 0.20649852072450153 atol=1e-12
 end
 
 @testset "PanelAdequacy shared infrastructure" begin

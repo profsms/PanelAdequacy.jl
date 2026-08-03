@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "Please cite the relevant working paper and this software."
+title: "PanelAdequacy.jl"
+version: 0.5.0
+date-released: 2026-08-02
+license: MIT
+repository-code: "https://github.com/profsms/PanelAdequacy.jl"
+authors:
+  - family-names: "Halkiewicz"
+    given-names: "Stanislaw M. S."
+    email: "stashal@o2.pl"
+    orcid: "https://orcid.org/0009-0000-7344-7522"
+preferred-citation:
+  type: software
+  title: "PanelAdequacy.jl"
+  version: 0.5.0
+  year: 2026
+  authors:
+    - family-names: "Halkiewicz"
+      given-names: "Stanislaw M. S."

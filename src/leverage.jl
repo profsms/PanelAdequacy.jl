@@ -76,6 +76,48 @@ function _fe_leverage_diag(uid::Vector{Int}, tid::Vector{Int}, N::Int, T::Int)
     return p
 end
 
+"Score concentration from residualized treatment and regression residuals."
+function _score_concentration(xt::AbstractVector{<:Real},
+                              u::AbstractVector{<:Real})
+    length(xt) == length(u) || throw(ArgumentError(
+        "xt and residuals must have equal length"))
+    score_mass = sum(abs2.(xt) .* abs2.(u))
+    if !(score_mass > 0)
+        return (lambda_score=NaN, H_score=NaN, n_eff_score=NaN)
+    end
+    shares = abs2.(xt) .* abs2.(u) ./ score_mass
+    H_score = sum(abs2, shares)
+    return (lambda_score=maximum(shares), H_score=H_score,
+            n_eff_score=inv(H_score))
+end
+
+"""
+    score_concentration(y, x, unit, time; controls=nothing) -> NamedTuple
+
+Realized score concentration for the two-way fixed-effect regression of `y`
+on `x`, after removing optional numeric nuisance `controls`:
+`(lambda_score, H_score, n_eff_score)`. It is a one-outcome warning
+diagnostic, not by itself a consistent estimator of population score
+concentration under unrestricted heteroskedasticity.
+"""
+function score_concentration(y::AbstractVector{<:Real},
+                             x::AbstractVector{<:Real},
+                             unit::AbstractVector, time::AbstractVector;
+                             controls=nothing)
+    uid, tid, N, T = _integer_codes(unit, time)
+    n = length(uid)
+    (length(y) == n && length(x) == n) || throw(ArgumentError(
+        "y, x, unit, time must have equal length"))
+    partial = _partial_within_codes(x, uid, tid, N, T; controls=controls)
+    xt = partial.xt
+    yt = _partial_outcome_codes(y, uid, tid, N, T, partial.Q)
+    V_n = sum(abs2, xt)
+    V_n > 1e-12 * max(sum(abs2, Float64.(x)), 1.0) || throw(ArgumentError(
+        "regressor has no within variation (collinear with the fixed effects)"))
+    beta = dot(xt, yt) / V_n
+    return _score_concentration(xt, yt .- beta .* xt)
+end
+
 """
     leverage_report(y, x, unit, time; alpha=0.05, delta=0.05) -> AdequacyReport
 
@@ -106,20 +148,22 @@ limits do not apply.
 """
 function leverage_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
                          unit::AbstractVector, time::AbstractVector;
-                         alpha::Real=0.05, delta::Real=0.05)
+                         alpha::Real=0.05, delta::Real=0.05,
+                         controls=nothing)
     uid, tid, N, T = _integer_codes(unit, time)
     n = length(uid)
     (length(y) == n && length(x) == n) ||
         throw(ArgumentError("y, x, unit, time must have equal length"))
 
-    d_K, ncomp = fe_dimension(uid, tid, N, T)
-    dof = n - d_K - 1
+    partial = _partial_within_codes(x, uid, tid, N, T; controls=controls)
+    xt = partial.xt
+    design = _design_summary_codes(uid, tid, N, T; xt=xt)
+    d_K = design.d_K
+    dof = n - d_K - partial.rank - 1
     dof > 0 || throw(ArgumentError(
-        "no residual degrees of freedom (n - d_K - 1 = $dof <= 0)"))
-
-    xt = _twoway_demean(Float64.(x), uid, tid, N, T)
-    yt = _twoway_demean(Float64.(y), uid, tid, N, T)
-    V_n = sum(abs2, xt)
+        "no residual degrees of freedom after fixed effects, controls, and the target regressor ($dof <= 0)"))
+    yt = _partial_outcome_codes(y, uid, tid, N, T, partial.Q)
+    V_n = something(design.tau_star2)
     V_n > 1e-12 * max(sum(abs2, Float64.(x)), 1.0) || throw(ArgumentError(
         "regressor has no within variation (collinear with the fixed effects)"))
 
@@ -128,7 +172,9 @@ function leverage_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
     rss = sum(abs2, u)
 
     p_fe = _fe_leverage_diag(uid, tid, N, T)
-    H = p_fe .+ abs2.(xt) ./ V_n
+    h_controls = size(partial.Q, 2) == 0 ? zeros(n) :
+                 vec(sum(abs2, partial.Q; dims=2))
+    H = p_fe .+ h_controls .+ abs2.(xt) ./ V_n
     maxH = maximum(H)
     maxH < 1 - 1e-10 || throw(ArgumentError(
         "an observation has full leverage H_ii = 1; HC2/HC3 are undefined " *
@@ -153,8 +199,8 @@ function leverage_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
     rho_dag = _rho_dagger(alpha, delta)
 
     # --- the two design conditions of the corrected theory ------------------
-    lambda_n = maximum(abs2, xt) / V_n            # ass:des(ii)
-    n_eff = 1 / sum(abs2, abs2.(xt) ./ V_n)       # effective support size
+    lambda_n = something(design.lambda_n)          # ass:des(ii)
+    n_eff = something(design.n_eff)                # effective support size
     unif_gap = maximum(abs.(H .- rho))            # ass:hc(ii)
 
     # Hessian deflation (lem:hess(b)): V_n estimates (1-rho) * n * Qbar, so the
@@ -201,17 +247,10 @@ function leverage_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
     verdict = (size_naive - alpha > delta || flip || lam_bad || unif_bad) ?
               :FLAGGED : :CERTIFIED
 
-    design = DesignSummary(n, N, T, d_K, rho, ncomp, V_n)
-    score_mass = sum(abs2.(xt) .* abs2.(u))
-    if score_mass > 0
-        score_share = abs2.(xt) .* abs2.(u) ./ score_mass
-        score_lambda_n = maximum(score_share)
-        score_H_n = sum(abs2, score_share)
-        score_n_eff = 1 / score_H_n
+    score = _score_concentration(xt, u)
+    if isfinite(score.lambda_score)
         push!(notes, @sprintf("realized score diagnostic (Paper A, Remark rem:diag): lambda_score = %.4f, N_eff,score = %.1f. This is a one-realization warning statistic, not by itself a consistent population concentration estimate.",
-                              score_lambda_n, score_n_eff))
-    else
-        score_lambda_n = score_H_n = score_n_eff = NaN
+                              score.lambda_score, score.n_eff_score))
     end
 
     statistic = (beta=beta, se_naive=se_naive, se_df=se_df, se_hc0=se_hc0,
@@ -219,8 +258,11 @@ function leverage_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
                  t_hc2=beta / se_hc2, max_leverage=maxH,
                  max_fe_leverage=maximum(p_fe), leverage_spread=spread,
                  lambda_n=lambda_n, n_eff=n_eff, uniform_leverage_gap=unif_gap,
-                 score_lambda_n=score_lambda_n, score_H_n=score_H_n,
-                 score_n_eff=score_n_eff,
+                 lambda_score=score.lambda_score, H_score=score.H_score,
+                 n_eff_score=score.n_eff_score,
+                 score_lambda_n=score.lambda_score, score_H_n=score.H_score,
+                 score_n_eff=score.n_eff_score,
+                 control_rank=partial.rank,
                  V_n=V_n, Q_hat=Q_hat, implied_size_hc3=size_hc3)
 
     return AdequacyReport(:leverage, design, statistic, nothing, nothing,

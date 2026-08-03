@@ -46,6 +46,31 @@
 # heuristics proved optimal within their scope.
 # =============================================================================
 
+function _binary_floor_info(x::AbstractVector{<:Real}, alpha::Real)
+    all(isfinite, x) || throw(ArgumentError("x must contain only finite values"))
+    is_binary = all(z -> iszero(z) || z == one(z), x)
+    if !is_binary
+        return (is_binary=false, n_treated=nothing, binary_floor_ok=true,
+                floor=nothing,
+                reason="not a binary treatment; the binary granularity floor does not apply.")
+    end
+
+    n1 = count(z -> z == one(z), x)
+    n0 = length(x) - n1
+    cap = min(n1, n0)
+    floor = exp2(1 - cap)
+    ok = floor <= alpha
+    relation = ok ? "<=" : ">"
+    ending = ok ?
+        "The structural granularity floor permits a two-sided level-alpha test." :
+        "Not repairable by repacking."
+    reason = @sprintf(
+        "binary treatment, n1 = %d treated and n0 = %d untreated observations; at most min(n1,n0) = %d contrasts can carry loading; floor 2^(1-%d) = %.6g %s alpha = %.6g. %s",
+        n1, n0, cap, cap, floor, relation, alpha, ending)
+    return (is_binary=true, n_treated=n1, binary_floor_ok=ok,
+            floor=floor, reason=reason)
+end
+
 """
     CycleSystem
 
@@ -80,7 +105,7 @@ end
 # Two-way residualization (alternating projections; unbalanced-safe)
 # -----------------------------------------------------------------------------
 function _ap_demean(x::Vector{Float64}, a::Vector{Int}, b::Vector{Int},
-                    na::Int, nb::Int; tol=1e-12, maxiter=5000)
+                    na::Int, nb::Int; tol=1e-10, maxiter=5000)
     xt = x .- mean(x)
     sa = zeros(Float64, na); ca = zeros(Int, na)
     sb = zeros(Float64, nb); cb = zeros(Int, nb)
@@ -249,6 +274,38 @@ function _greedy_packing(a::Vector{Int}, b::Vector{Int}, xt::Vector{Float64})
     return rows, signs
 end
 
+function _packing_capture(rows, signs, x::Vector{Float64})
+    return sum((sum(signs[c][k] * x[e]
+                    for (k, e) in enumerate(rows[c])) / sqrt(length(rows[c])))^2
+               for c in eachindex(rows))
+end
+
+function _greedy_multistart(a::Vector{Int}, b::Vector{Int}, x::Vector{Float64})
+    m = length(a)
+    idx = collect(1:m)
+    prime = 2_147_483_647
+    orders = Vector{Vector{Int}}()
+    push!(orders, idx)
+    push!(orders, sortperm(idx; by=i -> (a[i], x[i], b[i]), alg=MergeSort))
+    for multiplier in (130_363, 13_262_647)
+        push!(orders, sortperm(idx;
+            by=i -> mod(i * multiplier, prime), alg=MergeSort))
+    end
+
+    best_rows = Vector{Vector{Int}}()
+    best_signs = Vector{Vector{Float64}}()
+    best_capture = -Inf
+    for order in orders
+        rows, signs = _greedy_packing(a[order], b[order], x[order])
+        mapped = [[order[e] for e in row] for row in rows]
+        capture = _packing_capture(mapped, signs, x)
+        if capture > best_capture + 1e-14 * max(capture, best_capture, 1.0)
+            best_rows, best_signs, best_capture = mapped, signs, capture
+        end
+    end
+    return best_rows, best_signs
+end
+
 # -----------------------------------------------------------------------------
 # Structured packing: unit-pair four-cycles, greedy by squared loading
 # -----------------------------------------------------------------------------
@@ -264,7 +321,8 @@ carry identical squared loadings, so the greedy path — and the resulting captu
 numbers.
 """
 function _structured_packing(a::Vector{Int}, b::Vector{Int}, xr::Vector{Float64},
-                             units::Vector{Int}, periods::Vector{Int})
+                             units::Vector{Int}, periods::Vector{Int};
+                             reverse_ties::Bool=false)
     m = length(a)
     cell = Dict{Tuple{Int,Int},Int}()
     for e in 1:m
@@ -284,6 +342,18 @@ function _structured_packing(a::Vector{Int}, b::Vector{Int}, xr::Vector{Float64}
         end
     end
     sort!(cands; by=first, rev=true, alg=MergeSort)   # stable
+    if reverse_ties
+        first_tie = 1
+        while first_tie <= length(cands)
+            last_tie = first_tie
+            while last_tie < length(cands) &&
+                  cands[last_tie + 1][1] == cands[first_tie][1]
+                last_tie += 1
+            end
+            reverse!(cands, first_tie, last_tie)
+            first_tie = last_tie + 1
+        end
+    end
 
     sg = [1.0, -1.0, 1.0, -1.0]
     used = falses(m)
@@ -383,11 +453,115 @@ function _sparse_packing(a::Vector{Int}, b::Vector{Int}, xt::Vector{Float64})
     return rows, signs
 end
 
+# Combine disjoint FE-annihilating cycles in pairs so the resulting support
+# contrast also annihilates one continuous nuisance covariate. For two base
+# contrasts q_i and q_j, (g_j q_i - g_i q_j)/sqrt(g_i^2+g_j^2), where
+# g_c=q_c'z, is the unique normalized combination orthogonal to z.
+function _controlled_pairing(rows::Vector{Vector{Int}},
+                             signs::Vector{Vector{Float64}},
+                             x::Vector{Float64}, z::Vector{Float64})
+    C = length(rows)
+    load = zeros(Float64, C)
+    nuisance = zeros(Float64, C)
+    for c in 1:C
+        q = signs[c] ./ sqrt(length(rows[c]))
+        load[c] = dot(q, x[rows[c]])
+        nuisance[c] = dot(q, z[rows[c]])
+    end
+    tol = 64 * eps(Float64) * max(norm(z), 1.0)
+    zero = findall(g -> abs(g) <= tol, nuisance)
+    nonzero = findall(g -> abs(g) > tol, nuisance)
+    out_rows = Vector{Vector{Int}}()
+    out_signs = Vector{Vector{Float64}}()
+    used = falses(C)
+    for c in zero
+        push!(out_rows, rows[c]); push!(out_signs, signs[c]); used[c] = true
+    end
+    candidates = Tuple{Float64,Int,Int}[]
+    if length(nonzero) >= 2
+        for ii in 1:(length(nonzero) - 1), jj in (ii + 1):length(nonzero)
+            i, j = nonzero[ii], nonzero[jj]
+            den = nuisance[i]^2 + nuisance[j]^2
+            num = nuisance[j] * load[i] - nuisance[i] * load[j]
+            push!(candidates, (num^2 / den, i, j))
+        end
+    end
+    sort!(candidates; by=c -> (-c[1], c[2], c[3]))
+    for (_, i, j) in candidates
+        (used[i] || used[j]) && continue
+        den = hypot(nuisance[i], nuisance[j])
+        a1, a2 = nuisance[j] / den, -nuisance[i] / den
+        q1 = signs[i] ./ sqrt(length(rows[i]))
+        q2 = signs[j] ./ sqrt(length(rows[j]))
+        r = vcat(rows[i], rows[j])
+        q = vcat(a1 .* q1, a2 .* q2)
+        push!(out_rows, r)
+        push!(out_signs, q .* sqrt(length(r)))
+        used[i] = used[j] = true
+    end
+    return out_rows, out_signs
+end
+
+# Dense one-control construction. A 2-by-3 complete rectangle has a
+# two-dimensional FE cycle space; projecting the target cycle coordinates off
+# the control coordinate leaves a one-dimensional contrast that annihilates
+# unit effects, period effects, and the control exactly.
+function _controlled_rectangles(a::Vector{Int}, b::Vector{Int},
+                                x::Vector{Float64}, z::Vector{Float64})
+    cell = Dict{Tuple{Int,Int},Int}()
+    for e in eachindex(a)
+        key = (a[e], b[e])
+        haskey(cell, key) && return Vector{Vector{Int}}(), Vector{Vector{Float64}}()
+        cell[key] = e
+    end
+    N, T = maximum(a), maximum(b)
+    T >= 3 || return Vector{Vector{Int}}(), Vector{Vector{Float64}}()
+    q1 = [0.5, -0.5, 0.0, -0.5, 0.5, 0.0]
+    q2 = [1.0, 1.0, -2.0, -1.0, -1.0, 2.0] ./ sqrt(12.0)
+    candidates = Tuple{Float64,Vector{Int},Vector{Float64},Int}[]
+    serial = 0
+    for u1 in 1:(N - 1), u2 in (u1 + 1):N
+        for t1 in 1:(T - 2), t2 in (t1 + 1):(T - 1), t3 in (t2 + 1):T
+            keys = ((u1,t1), (u1,t2), (u1,t3),
+                    (u2,t1), (u2,t2), (u2,t3))
+            all(k -> haskey(cell, k), keys) || continue
+            r = [cell[k] for k in keys]
+            l1, l2 = dot(q1, x[r]), dot(q2, x[r])
+            g1, g2 = dot(q1, z[r]), dot(q2, z[r])
+            gss = g1^2 + g2^2
+            if gss > 64 * eps(Float64) * max(sum(abs2, z[r]), 1.0)
+                proj = (g1 * l1 + g2 * l2) / gss
+                a1, a2 = l1 - proj * g1, l2 - proj * g2
+            else
+                a1, a2 = l1, l2
+            end
+            anorm = hypot(a1, a2)
+            anorm > 64 * eps(Float64) * max(norm(x[r]), 1.0) || continue
+            q = (a1 .* q1 .+ a2 .* q2) ./ anorm
+            serial += 1
+            push!(candidates, (anorm^2, r, q .* sqrt(6.0), serial))
+        end
+    end
+    sort!(candidates; by=c -> (-c[1], c[4]))
+    used = falses(length(a))
+    rows = Vector{Vector{Int}}()
+    signs = Vector{Vector{Float64}}()
+    for (_, r, s, _) in candidates
+        any(used[r]) && continue
+        push!(rows, r); push!(signs, s); used[r] .= true
+    end
+    return rows, signs
+end
+
 """
-    cycle_contrasts(x, unit, time; method=:structured) -> CycleSystem
+    cycle_contrasts(x, unit, time; method=:structured, controls=nothing) -> CycleSystem
 
 Build a system of nuisance-annihilating contrasts for the two-way design
-`(unit, time)` with treatment `x`.
+`(unit, time)` with treatment `x`. With one linearly independent continuous
+control, `:structured` uses complete 2-by-3 rectangles and local cycle-space
+projection; the other methods pair base cycles. Every returned contrast then
+annihilates the fixed effects and the control. More than one continuous control
+is rejected rather than silently producing an invalid exact test.
 
 - `:structured` (default) — unit-pair four-cycles taken greedily by squared
   loading. This is what the paper reports; on the public matched
@@ -398,27 +572,46 @@ Build a system of nuisance-annihilating contrasts for the two-way design
   firm-pair four-cycles built from movers with the optimal extreme (nested)
   pairing, then a DFS pass. `O(m log m)`; this is the method for AKM-style
   designs and the one the article's headline match-level figure uses.
-- `:greedy` — digons first, then DFS-extracted cycles. A LOWER BOUND on
-  achievable capture; cheap and always available.
+- `:greedy` — digons first, then DFS-extracted cycles, retaining the best of
+  four fixed traversal orders. A LOWER BOUND on achievable capture; cheap,
+  deterministic, and always available.
 
 Each contrast annihilates both sets of fixed effects identically, so `v_c'y`
 is free of the nuisance parameters exactly, in finite samples.
 """
 function cycle_contrasts(x::AbstractVector{<:Real}, unit::AbstractVector,
-                         time::AbstractVector; method::Symbol=:structured)
+                         time::AbstractVector; method::Symbol=:structured,
+                         controls=nothing)
     method in (:structured, :sparse, :greedy) ||
         throw(ArgumentError("method must be :structured, :sparse or :greedy"))
-    uid, tid, N, T = _integer_codes(unit, time)
-    n = length(uid)
+    n = length(unit)
+    length(time) == n || throw(ArgumentError(
+        "x, unit, time must have equal length"))
     length(x) == n || throw(ArgumentError("x, unit, time must have equal length"))
+    (any(ismissing, unit) || any(ismissing, time)) && throw(ArgumentError(
+        "unit and time identifiers cannot be missing"))
+    xr0 = Float64.(x)
+    all(isfinite, xr0) || throw(ArgumentError("x must contain only finite values"))
+
+    # Canonical row order makes every packing invariant to input row order.
+    # The returned supports are mapped back to the caller's observation indices.
+    order = sortperm(collect(1:n);
+                     by=i -> (unit[i], time[i], xr0[i]), alg=MergeSort)
+    uc = unit[order]
+    tc = time[order]
+    xr = xr0[order]
+    Zr = _control_matrix(controls, n)[order, :]
+    uid, tid, N, T = _integer_codes(uc, tc)
     # V_n needs the residualized treatment; the CONTRASTS do not. Every
     # annihilating contrast satisfies M_D v_c = v_c, hence v_c'xtilde = v_c'x
     # EXACTLY. Ranking and loadings therefore use the raw treatment: the
     # alternating projections contribute no round-off to them, so the greedy
     # path is decided by the design rather than by the last ulp of an iterative
     # solve — which is what makes the packing reproducible across languages.
-    xr = Float64.(x)
-    xt = _ap_demean(copy(xr), uid, tid, N, T)
+    partial = _partial_within_codes(xr, uid, tid, N, T; controls=Zr)
+    partial.rank <= 1 || throw(ArgumentError(
+        "cycle packing currently supports at most one linearly independent continuous control"))
+    xt = partial.xt
     V_n = sum(abs2, xt)
     V_n > 1e-12 * max(sum(abs2, xr), 1.0) ||
         throw(ArgumentError("regressor has no within variation"))
@@ -429,14 +622,45 @@ function cycle_contrasts(x::AbstractVector{<:Real}, unit::AbstractVector,
         ulab = Vector{eltype(unit)}(undef, N)
         tlab = Vector{eltype(time)}(undef, T)
         for k in eachindex(uid)
-            ulab[uid[k]] = unit[k]
-            tlab[tid[k]] = time[k]
+            ulab[uid[k]] = uc[k]
+            tlab[tid[k]] = tc[k]
         end
-        rows, signs = _structured_packing(uid, tid, xr, sortperm(ulab), sortperm(tlab))
+        rows, signs = _structured_packing(uid, tid, xr,
+                                          sortperm(ulab), sortperm(tlab))
+        rows2, signs2 = _structured_packing(uid, tid, xr,
+                                            sortperm(ulab), sortperm(tlab);
+                                            reverse_ties=true)
+        if _packing_capture(rows2, signs2, xr) >
+           _packing_capture(rows, signs, xr) + 1e-14 * max(V_n, 1.0)
+            rows, signs = rows2, signs2
+        end
     elseif method === :sparse
         rows, signs = _sparse_packing(uid, tid, xr)
     else
-        rows, signs = _greedy_packing(uid, tid, xr)
+        rows, signs = _greedy_multistart(uid, tid, xr)
+    end
+    if method !== :greedy
+        greedy_rows, greedy_signs = _greedy_multistart(uid, tid, xr)
+        if _packing_capture(greedy_rows, greedy_signs, xr) >
+           _packing_capture(rows, signs, xr) + 1e-14 * max(V_n, 1.0)
+            rows, signs = greedy_rows, greedy_signs
+        end
+    end
+    if partial.rank == 1
+        z = vec(partial.Q[:, 1])
+        paired_rows, paired_signs = _controlled_pairing(rows, signs, xr, z)
+        if method === :structured
+            rect_rows, rect_signs = _controlled_rectangles(uid, tid, xr, z)
+            if _packing_capture(rect_rows, rect_signs, xr) >
+               _packing_capture(paired_rows, paired_signs, xr) +
+               1e-14 * max(V_n, 1.0)
+                rows, signs = rect_rows, rect_signs
+            else
+                rows, signs = paired_rows, paired_signs
+            end
+        else
+            rows, signs = paired_rows, paired_signs
+        end
     end
     C = length(rows)
     loadings = Vector{Float64}(undef, C)
@@ -448,7 +672,8 @@ function cycle_contrasts(x::AbstractVector{<:Real}, unit::AbstractVector,
         loadings[c] = s / sqrt(length(rows[c]))
     end
     ssq = sum(abs2, loadings)
-    return CycleSystem(rows, signs, loadings, V_n, ssq / V_n,
+    mapped_rows = [[order[e] for e in r] for r in rows]
+    return CycleSystem(mapped_rows, signs, loadings, V_n, ssq / V_n,
                        C == 0 ? 0.0 : maximum(abs2, loadings) / max(ssq, eps()))
 end
 
@@ -587,8 +812,8 @@ The capture ratio `kappa_C` alone (Definition def:kappa). It equals the Pitman
 efficiency relative to the Gaussian oracle only when both (P1) and (P2) of
 Theorem thm:power hold. It remains a design-only capture statistic elsewhere.
 """
-cycle_capture(x, unit, time; method::Symbol=:structured) =
-    cycle_contrasts(x, unit, time; method=method).kappa
+cycle_capture(x, unit, time; method::Symbol=:structured, controls=nothing) =
+    cycle_contrasts(x, unit, time; method=method, controls=controls).kappa
 
 # -----------------------------------------------------------------------------
 # Exact sign-flip test, and its inversion
@@ -616,10 +841,11 @@ function signflip_test(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
                        beta0::Real=0.0, nflips::Integer=99999,
                        rng::AbstractRNG=Random.default_rng(),
                        method::Symbol=:structured,
+                       controls=nothing,
                        blocks::Union{Nothing,AbstractVector}=nothing)
     length(y) == length(x) || throw(ArgumentError(
         "y, x, unit and time must have equal length"))
-    cs = cycle_contrasts(x, unit, time; method=method)
+    cs = cycle_contrasts(x, unit, time; method=method, controls=controls)
     return signflip_test(y, cs; beta0=beta0, nflips=nflips, rng=rng,
                          blocks=blocks)
 end
@@ -700,11 +926,12 @@ function signflip_interval(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
                            nflips::Integer=99999,
                            rng::AbstractRNG=Random.default_rng(),
                            method::Symbol=:structured,
+                           controls=nothing,
                            blocks::Union{Nothing,AbstractVector}=nothing,
                            span::Real=12.0)
     length(y) == length(x) || throw(ArgumentError(
         "y, x, unit and time must have equal length"))
-    cs = cycle_contrasts(x, unit, time; method=method)
+    cs = cycle_contrasts(x, unit, time; method=method, controls=controls)
     return signflip_interval(y, cs; alpha=alpha, ngrid=ngrid,
                              nflips=nflips, rng=rng, blocks=blocks, span=span)
 end
@@ -749,16 +976,44 @@ function signflip_interval(y::AbstractVector{<:Real}, cs::CycleSystem;
 
     grid = range(beta_tilde - span * scale, beta_tilde + span * scale;
                  length=ngrid)
-    pv = Vector{Float64}(undef, ngrid)
-    @inbounds for g in 1:ngrid
-        b0 = grid[g]
-        T0 = abs(A0 - b0 * B0)
-        ge = 0
-        for j in 1:nflips
-            abs(As[j] - b0 * Bs[j]) >= T0 - 1e-12 && (ge += 1)
+    # For |Bs| < B0, |As-beta*Bs| >= |A0-beta*B0| holds exactly between
+    # the two equality roots. Sweep those intervals over the sorted grid in
+    # O(B log G + G), instead of evaluating all B*G statistic pairs.
+    diff = zeros(Int, ngrid + 1)
+    scale_orbit = max(abs(A0), B0, 1.0)
+    orbit_tol = 64 * eps(Float64) * scale_orbit
+    @inbounds for j in 1:nflips
+        if abs(abs(Bs[j]) - B0) <= orbit_tol
+            orientation = Bs[j] >= 0 ? 1.0 : -1.0
+            if abs(As[j] - orientation * A0) <= orbit_tol
+                diff[1] += 1; diff[end] -= 1
+                continue
+            end
         end
-        pv[g] = (1 + ge) / (1 + nflips)
+        d1, d2 = B0 - Bs[j], B0 + Bs[j]
+        if abs(d1) <= orbit_tol || abs(d2) <= orbit_tol
+            # This can only arise from an all-equal sign vector in exact
+            # arithmetic; retain a conservative direct fallback if rounding
+            # produces a near-degenerate exceptional draw.
+            for g in 1:ngrid
+                b0 = grid[g]
+                abs(As[j] - b0 * Bs[j]) >= abs(A0 - b0 * B0) - 1e-12 &&
+                    (diff[g] += 1; diff[g + 1] -= 1)
+            end
+            continue
+        end
+        r1 = (A0 - As[j]) / d1
+        r2 = (A0 + As[j]) / d2
+        lo, hi = minmax(r1, r2)
+        left = searchsortedfirst(grid, lo)
+        right = searchsortedlast(grid, hi)
+        if left <= right
+            diff[left] += 1
+            diff[right + 1] -= 1
+        end
     end
+    counts = cumsum(@view diff[1:ngrid])
+    pv = (1 .+ counts) ./ (1 + nflips)
 
     acc = findall(>(alpha), pv)
     if isempty(acc)
@@ -810,6 +1065,7 @@ function cycle_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
                       method::Symbol=:structured, nflips::Integer=99999,
                       rng::AbstractRNG=Random.default_rng(), interval::Bool=true,
                       lambda_max::Real=0.10,
+                      controls=nothing,
                       blocks::Union{Nothing,AbstractVector}=nothing)
     0 < alpha < 1 || throw(ArgumentError("alpha must lie in (0, 1)"))
     0 < delta < 1 - alpha || throw(ArgumentError(
@@ -822,7 +1078,7 @@ function cycle_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
         throw(ArgumentError("y, x, unit, time must have equal length"))
     d_K, ncomp = fe_dimension(uid, tid, N, T)
 
-    cs = cycle_contrasts(x, unit, time; method=method)
+    cs = cycle_contrasts(x, unit, time; method=method, controls=controls)
     C = length(cs)
     Ceff = length(_active_supports(cs))
     if blocks !== nothing
@@ -833,7 +1089,8 @@ function cycle_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
             "contrast supports are not unions of complete dependence blocks; " *
             "$(comp.incompatible_blocks) block(s) are partial or split"))
     end
-    xt = _ap_demean(Float64.(x), uid, tid, N, T)
+    partial = _partial_within_codes(x, uid, tid, N, T; controls=controls)
+    xt = partial.xt
     V_n = cs.V_n
     concentration_level = blocks === nothing ? :observation : :block
     bcode = blocks === nothing ? nothing : _codes(blocks)
@@ -851,7 +1108,7 @@ function cycle_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
     H_n = sum(abs2, treatment_share)
     n_eff = 1 / H_n
 
-    yt = _ap_demean(Float64.(y), uid, tid, N, T)
+    yt = _partial_outcome_codes(y, uid, tid, N, T, partial.Q)
     beta_ols = dot(xt, yt) / V_n
     u = yt .- beta_ols .* xt
     score_contribution = if bcode === nothing
@@ -872,17 +1129,21 @@ function cycle_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
     else
         score_lambda_n = score_H_n = score_n_eff = NaN
     end
-    cyc_dim = n - (N + T) + ncomp
+    cyc_dim = n - (N + T) + ncomp - partial.rank
 
     itv = interval && Ceff > 0 ?
           signflip_interval(y, cs; alpha=alpha, nflips=nflips,
                             rng=rng, blocks=blocks) : nothing
 
     min_p = Ceff > 0 ? exp2(1 - Ceff) : 1.0
+    binary = _binary_floor_info(x, alpha)
     notes = String[]
+    partial.rank > 0 && push!(notes, @sprintf(
+        "every support contrast annihilates both fixed effects and %d linearly independent continuous nuisance control(s); no global outcome residualization is used in the exact test.",
+        partial.rank))
     push!(notes, @sprintf("capture kappa_C = %.4f over C = %d supports (%d treatment-loaded); the capture-implied signal/SE ratio is 1/sqrt(kappa) = %.3fx. Kappa equals Pitman efficiency only when both (P1) and the diffuse-design condition (P2) of Theorem thm:power hold.",
                           cs.kappa, C, Ceff, 1 / sqrt(cs.kappa)))
-    push!(notes, @sprintf("cycle-space dimension = %d; the contrast system uses %d supports (%.1f%%). Weighted edge-disjoint cycle packing is NP-hard, so the packing is a heuristic and kappa_C is a LOWER BOUND on achievable capture. Where a discrete treatment makes many four-cycle loadings exactly tied, the realized kappa depends on how ties are broken; this implementation ranks on the raw treatment (exact, no alternating-projection round-off) and breaks ties by label order, so it is deterministic and identical across languages. A run whose ties were broken by floating-point noise — as in the article's reported figures — can land a few points either side of this value.",
+    push!(notes, @sprintf("cycle-space dimension = %d; the contrast system uses %d supports (%.1f%%). Weighted edge-disjoint cycle packing is NP-hard, so the packing is a heuristic and kappa_C is a LOWER BOUND on achievable capture. Where a discrete treatment makes many four-cycle loadings exactly tied, this implementation ranks on the raw treatment (exact, no alternating-projection round-off), uses canonical label ordering, and compares fixed traversal orders. The selected supports are therefore deterministic, row-order invariant, and identical across languages.",
                           cyc_dim, C, 100 * C / max(cyc_dim, 1)))
 
     # Any finite lambda cutoff is a user-facing warning convention, not a theorem:
@@ -922,16 +1183,30 @@ function cycle_report(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
 
     verdict = min_p > alpha ? :INCONCLUSIVE :
               concentrated ? :FLAGGED : :POINT_PASS
+    reason = if verdict !== :INCONCLUSIVE
+        ""
+    elseif binary.is_binary && !binary.binary_floor_ok
+        binary.reason
+    else
+        @sprintf("selected packing has effective_C = %d; floor 2^(1-%d) = %.6g > alpha = %.6g. A stronger compatible packing may repair this.",
+                 Ceff, Ceff, min_p, alpha)
+    end
+    !isempty(reason) && push!(notes, reason)
 
-    design = DesignSummary(n, N, T, d_K, d_K / n, ncomp, V_n)
+    design = _design_summary_codes(uid, tid, N, T; xt=xt)
     stat = (kappa=cs.kappa, C=C, effective_C=Ceff, cycle_dim=cyc_dim,
             concentration_level=concentration_level,
             concentration_blocks=blocks === nothing ? n : maximum(bcode),
             lambda_n=lambda_n, H_n=H_n, n_eff=n_eff,
             score_lambda_n=score_lambda_n, score_H_n=score_H_n,
             score_n_eff=score_n_eff, beta_ols=beta_ols,
+            control_rank=partial.rank,
+            lambda_score=score_lambda_n, H_score=score_H_n,
+            n_eff_score=score_n_eff,
             max_share=cs.max_share, se_price=1 / sqrt(cs.kappa),
             full_enumeration_floor=min_p, min_pvalue=min_p, method=method,
+            n_treated=binary.n_treated,
+            binary_floor_ok=binary.binary_floor_ok, reason=reason,
             beta_tilde=itv === nothing ? nothing : itv.beta_tilde,
             ci_lo=itv === nothing ? nothing : itv.lo,
             ci_hi=itv === nothing ? nothing : itv.hi,

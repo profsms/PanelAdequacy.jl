@@ -1,0 +1,8 @@
+Manifest.toml
+coverage/
+*.cov
+*.jl.cov
+parity/julia.json
+parity/r.json
+parity/julia_packing.json
+parity/r_packing.json

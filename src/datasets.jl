@@ -28,9 +28,10 @@ end
 """
     load_dataset(name) -> NamedTuple
 
-Load a bundled reference dataset as a `NamedTuple` of column vectors. Columns
-that parse fully as numbers become `Vector{Union{Missing,Float64}}` (blank
-cells → `missing`); the rest stay `Vector{String}`. Dependency-free.
+Load a bundled reference dataset as a `NamedTuple` of column vectors. Complete
+numeric columns become `Vector{Float64}`; numeric columns containing blank cells
+become `Vector{Union{Missing,Float64}}`; the rest stay `Vector{String}`.
+Dependency-free.
 
 # Example
 ```julia
@@ -66,7 +67,7 @@ function load_dataset(name::AbstractString)
                 parsed[i] = v
             end
         end
-        ok ? parsed : col
+        ok ? (any(ismissing, parsed) ? parsed : collect(skipmissing(parsed))) : col
     end
     return NamedTuple{Tuple(header)}(Tuple(cols))
 end

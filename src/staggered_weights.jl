@@ -326,7 +326,7 @@ function twfe_design(unit::AbstractVector, time::AbstractVector{<:Real},
     e_cell = Float64[t_cell[i] - g_cell[i] for i in 1:N1]
     G = _restricted_gammas(w, g_cell, e_cell, N1)
     d_K, ncomp = fe_dimension(uid, tid, N, T)
-    design = DesignSummary(n, N, T, d_K, d_K / n, ncomp, n_w)
+    design = _design_summary_codes(uid, tid, N, T; xt=Dt)
     eta_dag = _eta_dagger(alpha, delta)
 
     notes = String[]
@@ -498,7 +498,7 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
     eta_dag = _eta_dagger(alpha, delta)
     eta_cmb = pilots.cmb * CR.cmb                      # combined-class worst-case
     verdict = size_pt.cmb <= alpha + delta ? :CERTIFIED : :FLAGGED
-    design = DesignSummary(n, N, T, d_K, d_K / n, ncomp, n_w)
+    design = _design_summary_codes(uid, tid, N, T; xt=Dt)
     statistic = (Gamma=Gamma, Gamma_coh=G.coh, Gamma_evt=G.evt, Gamma_cmb=G.cmb,
                  neg_share=neg_share, psi_hat=psi_hat, psi_driven=psi_driven,
                  rho_ar1=rho_ar1, Gamma_CR=CR.unr, Gamma_coh_CR=CR.coh,

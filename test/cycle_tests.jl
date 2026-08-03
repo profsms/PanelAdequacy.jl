@@ -272,5 +272,53 @@ using DelimitedFiles
         @test rep2.statistic.effective_C == 1
         @test rep2.statistic.min_pvalue == 1.0
         @test rep2.verdict === :INCONCLUSIVE       # 2^(1-1) = 1 > alpha
+        @test occursin("may repair", rep2.statistic.reason)
+
+        # Binary-treatment granularity is structural: disjoint supports imply
+        # no more treatment-loaded contrasts than treated observations.
+        unit_b = repeat(1:6, inner=2)
+        time_b = ones(Int, 12)
+        y_b = [sin(k) + 0.1 * cos(2k) for k in 1:12]
+        x_low = repeat([1.0, 0.0], 6)
+        x_low[7:end] .= 0.0                    # n1 = 3, same design as x_high
+        x_high = repeat([1.0, 0.0], 6)         # n1 = 6
+
+        pre_low = PanelAdequacy.applicable(x_low, unit_b, time_b)
+        pre_high = PanelAdequacy.applicable(x_high, unit_b, time_b)
+        @test !pre_low.ok
+        @test occursin("n1 = 3 treated", pre_low.reason)
+        @test occursin("Not repairable by repacking", pre_low.reason)
+        @test pre_high.ok
+
+        low = cycle_report(y_b, x_low, unit_b, time_b;
+                           method=:greedy, interval=false)
+        high = cycle_report(y_b, x_high, unit_b, time_b;
+                            method=:greedy, interval=false)
+        @test low.verdict === :INCONCLUSIVE
+        @test low.statistic.n_treated == 3
+        @test !low.statistic.binary_floor_ok
+        @test occursin("floor 2^(1-3) = 0.25", low.statistic.reason)
+        @test high.verdict !== :INCONCLUSIVE
+        @test high.statistic.effective_C == 6
+        @test high.statistic.binary_floor_ok
+
+        # Complement coding gives the same structural conclusion: the tighter
+        # cap is min(n1,n0), not the arbitrary label attached to one category.
+        x_mostly = 1 .- x_low
+        pre_mostly = PanelAdequacy.applicable(x_mostly, unit_b, time_b)
+        @test !pre_mostly.ok
+        @test occursin("n1 = 9 treated and n0 = 3", pre_mostly.reason)
+        mostly = cycle_report(y_b, x_mostly, unit_b, time_b;
+                              method=:greedy, interval=false)
+        @test mostly.verdict === :INCONCLUSIVE
+        @test mostly.statistic.effective_C == 3
+
+        row = adequacy_row(x_high, unit_b, time_b; method=:greedy)
+        @test row.n_treated == 6
+        @test row.binary_floor_ok
+        continuous = adequacy_row(collect(1.0:12.0), unit_b, time_b;
+                                  method=:greedy)
+        @test continuous.n_treated === nothing
+        @test continuous.binary_floor_ok
     end
 end

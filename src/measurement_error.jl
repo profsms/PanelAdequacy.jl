@@ -427,7 +427,7 @@ function eiv_adequacy(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
         push!(extra, "psi was supplied directly with cluster=:iid, so the scale adjustment is computed but projection compatibility, cluster count and dominance cannot be checked without cluster identifiers. Pass cluster=:crve (or :ar1) when psi refers to unit clusters.")
     end
 
-    design = DesignSummary(n, N, T, d_K, d_K / n, ncomp, tau_star2)
+    design = _design_summary_codes(uid, tid, N, T; xt=xt)
     return _eiv_core(design, beta_star, sigma, tau_star2, lambda;
                      alpha=alpha, delta=delta, gamma=gamma, pilot=pilot,
                      psi_hat=psi_hat, rho_ar1=rho_ar1, cluster_diag=cdiag,
@@ -462,6 +462,30 @@ function eiv_adequacy(; beta_star::Real, sigma::Real, tau_star2::Real,
                      gamma=gamma, pilot=pilot,
                      psi_hat=(psi === nothing ? 1.0 : Float64(psi)),
                      extra_notes=String[])
+end
+
+"""
+    eiv_adequacy_summary(beta_star, sigma, tau_star2, n, d_K; kwargs...)
+
+Summary-output form of [`eiv_adequacy`](@ref), matching the R `panelcert` API.
+Use it when raw observations are unavailable but the fitted slope, residual
+scale, observed within variation, sample size, and fixed-effect dimension are
+reported.
+"""
+function eiv_adequacy_summary(beta_star::Real, sigma::Real, tau_star2::Real,
+                              n::Integer, d_K::Integer;
+                              reliability::Union{Nothing,Real}=nothing,
+                              sigma_nu2::Union{Nothing,Real}=nothing,
+                              N::Integer=0, T::Integer=0,
+                              alpha::Real=0.05, delta::Real=0.05,
+                              gamma::Real=0.05,
+                              pilot::Symbol=:conservative,
+                              psi::Union{Nothing,Real}=nothing)
+    return eiv_adequacy(; beta_star=beta_star, sigma=sigma,
+                        tau_star2=tau_star2, n=n, d_K=d_K,
+                        reliability=reliability, sigma_nu2=sigma_nu2,
+                        N=N, T=T, alpha=alpha, delta=delta, gamma=gamma,
+                        pilot=pilot, psi=psi)
 end
 
 function _eiv_core(design::DesignSummary, beta_star::Float64, sigma::Float64,

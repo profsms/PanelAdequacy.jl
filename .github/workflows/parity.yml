@@ -13,24 +13,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Select panelcert ref
-        id: sibling-ref
-        shell: bash
-        env:
-          CANDIDATE_REF: ${{ github.head_ref || github.ref_name }}
-        run: |
-          if git ls-remote --exit-code --heads \
-            https://github.com/profsms/panelcert.git \
-            "refs/heads/${CANDIDATE_REF}" >/dev/null 2>&1; then
-            echo "ref=${CANDIDATE_REF}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=main" >> "$GITHUB_OUTPUT"
-          fi
       - uses: actions/checkout@v4
         with:
           repository: profsms/panelcert
           path: panelcert
-          ref: ${{ steps.sibling-ref.outputs.ref }}
+          ref: ${{ github.head_ref || github.ref_name }}
       - uses: julia-actions/setup-julia@v2
         with:
           version: '1.10'

@@ -1,0 +1,8 @@
+{
+  "dense_numpy_seed": 42,
+  "dense_pandas_seed": 7,
+  "match_seed": 1,
+  "source": "Kline-Saggio-Solvsten public LeaveOutTwoWay test.csv",
+  "source_sha256": "93e57a413a8cfccdcb043c5d793105a67b2dc9ebd27d5d3a4f1800abf89a2241",
+  "wage_seed": 20260802
+}

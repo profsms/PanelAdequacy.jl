@@ -67,7 +67,8 @@ function _fe_leverage_diag(uid::Vector{Int}, tid::Vector{Int}, N::Int, T::Int)
         G[u, t] += 1.0
         G[t, u] += 1.0
     end
-    Gp = pinv(Symmetric(G))
+    # Julia 1.6's Symmetric pinv path forwards an unsupported SVD keyword.
+    Gp = pinv(G)
     p = Vector{Float64}(undef, length(uid))
     for k in eachindex(uid)
         u, t = uid[k], N + tid[k]

@@ -11,7 +11,7 @@ Install the current release from GitHub:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.5.0")
+Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.5.1")
 ```
 
 After registration in Julia General, `Pkg.add("PanelAdequacy")` will be sufficient.
@@ -31,6 +31,8 @@ report = cycle_report(d.invest, d.capital, d.firm, d.year; controls=d.value, int
 - `cycle_report(y, x, unit, time)` is the concentrated-regime workflow from Paper A. It reports capture, granularity, an exact sign-flip test, and an exact confidence set.
 - `eiv_adequacy(y, x, unit, time; ...)` screens continuous-regressor measurement error under Paper B's exact-normal mapping and conservative certificate.
 - `twfe_adequacy(y, unit, time, first_treat)` screens staggered-DiD/TWFE designs for heterogeneous-effect exposure.
+
+Default `cycle_report` rendering is concise. Detailed caveats remain available in `report.notes` and as a numbered display through `show_notes(report)`.
 
 `adequacy_row(x, unit, time; y=nothing)` composes the design and capture diagnostics into one flat record for prevalence screens.
 

@@ -1,8 +1,8 @@
 cff-version: 1.2.0
 message: "Please cite the relevant working paper and this software."
 title: "PanelAdequacy.jl"
-version: 0.5.0
-date-released: 2026-08-02
+version: 0.5.1
+date-released: 2026-08-04
 license: MIT
 repository-code: "https://github.com/profsms/PanelAdequacy.jl"
 authors:
@@ -13,7 +13,7 @@ authors:
 preferred-citation:
   type: software
   title: "PanelAdequacy.jl"
-  version: 0.5.0
+  version: 0.5.1
   year: 2026
   authors:
     - family-names: "Halkiewicz"

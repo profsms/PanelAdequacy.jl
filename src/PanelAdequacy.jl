@@ -22,7 +22,7 @@ using SparseArrays
 using SpecialFunctions: erfc, erfcinv
 
 export DesignSummary, design_summary, twoway_demean, multiway_demean, fe_dimension
-export AdequacyReport
+export AdequacyReport, show_notes
 export leverage_report, fe_leverage
 export score_concentration, applicable, adequacy_row
 export eiv_adequacy, reliability_from_interval, reliability_from_ratio,
@@ -70,7 +70,9 @@ Fields:
 - `implied_size` : implied size of the nominal-`alpha` test
 - `verdict`      : `:CERTIFIED` | `:POINT_PASS` | `:FLAGGED` | `:INCONCLUSIVE`
 - `alpha`, `delta` : tolerances used
-- `notes`        : honesty caveats triggered (e.g. "conservative pilot used")
+- `notes`        : honesty caveats triggered (e.g. "conservative pilot used").
+                   Cycle-inference notes are retained here but hidden in the
+                   default display; call [`show_notes`](@ref) to print them.
 """
 struct AdequacyReport
     pathology::Symbol
@@ -240,10 +242,39 @@ function Base.show(io::IO, ::MIME"text/plain", r::AdequacyReport)
     else
         print(io, "VERDICT: INCONCLUSIVE")
     end
-    for note in r.notes
-        print(io, "\nNote: ", note)
+    if r.pathology === :cycle_inference
+        isempty(r.notes) || @printf(io,
+            "\nDiagnostic notes hidden (%d); call show_notes(report) to display them.",
+            length(r.notes))
+    else
+        for note in r.notes
+            print(io, "\nNote: ", note)
+        end
     end
 end
+
+"""
+    show_notes([io::IO], report::AdequacyReport)
+
+Print the detailed diagnostic notes stored in `report.notes`. Cycle-inference
+notes are hidden in the default report rendering so that the headline design,
+capture, interval, reason, and verdict remain easy to scan.
+"""
+function show_notes(io::IO, r::AdequacyReport)
+    if isempty(r.notes)
+        println(io, "No diagnostic notes.")
+        return nothing
+    end
+    println(io, "Diagnostic notes for ", PATHOLOGY_TITLES[r.pathology],
+            " (", length(r.notes), "):")
+    for (i, note) in enumerate(r.notes)
+        i > 1 && println(io)
+        println(io, i, ". ", note)
+    end
+    return nothing
+end
+
+show_notes(r::AdequacyReport) = show_notes(stdout, r)
 
 Base.show(io::IO, r::AdequacyReport) = print(io,
     "AdequacyReport(:", r.pathology, ", verdict=:", r.verdict, ")")

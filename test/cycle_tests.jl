@@ -264,6 +264,14 @@ using DelimitedFiles
                             interval=false)
         @test repc.verdict === :FLAGGED
         @test any(occursin("CONCENTRATION WARNING", s) for s in repc.notes)
+        concise = sprint(show, MIME"text/plain"(), repc)
+        @test occursin("Diagnostic notes hidden", concise)
+        @test !occursin("CONCENTRATION WARNING", concise)
+        @test !occursin("\nNote:", concise)
+        detailed = sprint(io -> show_notes(io, repc))
+        @test occursin("Diagnostic notes for", detailed)
+        @test occursin("CONCENTRATION WARNING", detailed)
+        @test occursin("1. ", detailed)
 
         # too few supports for any level-alpha test to exist
         rep2 = cycle_report([1.0, 3.0, 0.0, 2.0], [1.0, 3.0, 0.0, 2.0],
@@ -273,6 +281,9 @@ using DelimitedFiles
         @test rep2.statistic.min_pvalue == 1.0
         @test rep2.verdict === :INCONCLUSIVE       # 2^(1-1) = 1 > alpha
         @test occursin("may repair", rep2.statistic.reason)
+        concise2 = sprint(show, MIME"text/plain"(), rep2)
+        @test occursin("Reason:", concise2)
+        @test occursin("may repair", concise2)
 
         # Binary-treatment granularity is structural: disjoint supports imply
         # no more treatment-loaded contrasts than treated observations.

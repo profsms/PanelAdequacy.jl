@@ -1050,6 +1050,10 @@ worker--firm application.
 The verdict answers the question this module exists for: **is the Gaussian
 approximation underlying conventional inference trustworthy on this design?**
 
+Detailed diagnostic caveats are retained in `report.notes` but hidden from the
+default display. Call [`show_notes`](@ref) on the returned report to print them;
+an `:INCONCLUSIVE` reason remains visible in the concise display.
+
 - `:POINT_PASS` — `lambda_n` is below the user-supplied finite-sample heuristic.
   This is not a theorem-level certificate: the paper requires `lambda_n -> 0`.
 - `:FLAGGED` — the identifying variation is concentrated. Conventional critical

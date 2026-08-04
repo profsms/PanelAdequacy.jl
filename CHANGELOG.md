@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1 - 2026-08-04
+
+- Keep `cycle_report` output concise by hiding its detailed diagnostic notes in default REPL rendering.
+- Preserve all notes in `report.notes` and add `show_notes(report)` for an explicit, numbered display; structural `INCONCLUSIVE` reasons remain visible in the default report.
+- Retain the Julia 1.6 compatibility and CI fixes merged after the v0.5.0 tag.
+
 ## 0.5.0 - 2026-08-02
 
 - Bundle the canonical public-domain 11-firm Grunfeld panel used by Paper A's concentrated-regime showcase, with pinned source and version provenance.

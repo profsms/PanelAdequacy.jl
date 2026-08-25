@@ -8,7 +8,7 @@ variance-estimator, measurement-error, and TWFE-heterogeneity failures.
 
 Current source map:
 - Paper A — exact contrast inference under concentrated identifying variation
-- Paper B — measurement-error adequacy
+- *Fixed-Effect Saturation Is Not Weak Identification* — measurement-error adequacy
 - Paper C — staggered-DiD / TWFE-heterogeneity adequacy
 - diffuse companion — leverage / variance diagnostics
 """
@@ -26,6 +26,7 @@ export AdequacyReport, show_notes
 export leverage_report, fe_leverage
 export score_concentration, applicable, adequacy_row
 export eiv_adequacy, reliability_from_interval, reliability_from_ratio,
+       reliability_from_repeats,
        breakdown_reliability, cluster_diagnostics, projection_compatibility,
        tau2_crit, eta_finite_n, eiv_adequacy_summary
 export twfe_design, twfe_adequacy, twfe_gammas
@@ -48,7 +49,7 @@ include("datasets.jl")
 
 const PATHOLOGY_TITLES = Dict(
     :leverage            => "Leverage / Variance (diffuse-regime companion)",
-    :measurement_error   => "Measurement Error (Paper B)",
+    :measurement_error   => "Measurement Error",
     :twfe_heterogeneity  => "TWFE Heterogeneity (Paper C)",
     :cycle_inference     => "Concentrated Identifying Variation (Paper A)",
 )

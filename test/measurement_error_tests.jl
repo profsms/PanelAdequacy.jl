@@ -1,11 +1,11 @@
 # =============================================================================
-# Module B — measurement-error adequacy (Paper B: paper_b_fe_eiv_JoE.tex)
-# Reference cases: spec §7.2 (V-Dem two-pole + gate-1 headline) and the PSID
-# application (Paper B §7.2). Threshold machinery must be exact-inversion /
+# Module B — measurement-error adequacy.
+# Reference cases: V-Dem, the repeated-report twins application, and the
+# extended simulation range. Threshold machinery must be exact-inversion /
 # quadratic — NEVER the discarded linear surrogate. Breakdown expectations are
 # the FIXED-POINT values lambda† = t*/(t* + eta†) (paper Def. def-breakdown);
 # cluster expectations are the by-unit CRVE psi_hat of Remark rem-cluster,
-# matching Table tab-vdem / tab-psid of the paper.
+# matching the current V-Dem and twins tables.
 # =============================================================================
 
 "Extract a V-Dem spec (y, x, x_sd complete cases) from the parsed CSV columns."
@@ -20,7 +20,7 @@ function vdem_spec(cols, xcol::Symbol, sdcol::Symbol)
             sd = Float64[sv[k] for k in keep])
 end
 
-@testset "Module B — measurement error (Paper B)" begin
+@testset "Module B — measurement error" begin
 
     @testset "threshold constants (Paper B, Remark rem-exact-cv)" begin
         @test PD._eta_dagger(0.05, 0.05) ≈ 0.652 atol = 5e-4
@@ -35,6 +35,9 @@ end
         @test PD._noncentral_size(0.0, 0.05) ≈ 0.05 atol = 1e-12
         @test PD._noncentral_size(-1.3, 0.05) ≈ PD._noncentral_size(1.3, 0.05) atol = 1e-14
         @test PD._noncentral_size(PD._eta_dagger(0.05, 0.05), 0.05) ≈ 0.10 atol = 1e-10
+        # Current simulation endpoints: Design 4 iid and Design 5 clustered.
+        @test PD._noncentral_size(3.58, 0.05) ≈ 0.9474 atol = 5e-5
+        @test PD._noncentral_size(3.67, 0.05) ≈ 0.9564 atol = 5e-5
     end
 
     @testset "reliability helpers" begin
@@ -43,9 +46,16 @@ end
         @test reliability_from_ratio(0.8, 2.0) ≈ sqrt(0.2) * 2.0
         # The old formula is still available when the supplied SD is latent signal.
         @test reliability_from_ratio(0.8, 2.0; scale=:signal) ≈ sqrt(0.25) * 2.0
+        xrep = [-2.0, -1.0, 1.0, 2.0]
+        zrep = [-1.8, -1.2, 0.9, 2.1]
+        @test reliability_from_repeats(xrep, zrep) ≈ dot(xrep, zrep) / dot(xrep, xrep)
+        @test reliability_from_repeats(xrep, zrep; method=:equal_variance) ≈
+              1 - dot(xrep - zrep, xrep - zrep) / (2dot(xrep, xrep))
         @test_throws ArgumentError reliability_from_ratio(1.2, 2.0)
         @test_throws ArgumentError reliability_from_ratio(0.8, -1.0)
         @test_throws ArgumentError reliability_from_interval([0.3], [0.2])
+        @test_throws ArgumentError reliability_from_repeats([1.0], [1.0])
+        @test_throws ArgumentError reliability_from_repeats([1.0, 2.0], [1.0])
     end
 
     @testset "primitive threshold: exact inversion is the default" begin
@@ -153,44 +163,62 @@ end
         @test st.beta_corr ≈ 0.083 atol = 1e-3
     end
 
-    @testset "PSID application via summary-form API (Paper B §app-psid)" begin
-        # regression output recorded in results/eiv_psid_summary.csv
-        bstar, sigma, tau2 = 0.7332110, 4.2465084, 83.1775587
-        n, d_K = 4165, 595 + 7 - 1
+    @testset "repeated-report twins application" begin
+        d = load_dataset("twins")
+        needed = (:DLHRWAGE, :DEDUC1, :DEDUC2, :DTEN, :DMARRIED, :DUNCOV)
+        keep = [all(!ismissing(getproperty(d, nm)[i]) for nm in needed)
+                for i in eachindex(d.DLHRWAGE)]
+        yraw = Float64.(d.DLHRWAGE[keep])
+        xraw = Float64.(d.DEDUC1[keep])
+        zraw = Float64.(d.DEDUC2[keep])
+        W = hcat(ones(sum(keep)), Float64.(d.DTEN[keep]),
+                 Float64.(d.DMARRIED[keep]), Float64.(d.DUNCOV[keep]))
+        y = yraw - W * (W \ yraw)
+        x = xraw - W * (W \ xraw)
+        z = zraw - W * (W \ zraw)
+        tau2 = dot(x, x)
+        bstar = dot(x, y) / tau2
+        u = y - bstar * x
+        n, d_K = length(y), size(W, 2)
+        sigma = sqrt(dot(u, u) / (n - d_K - 1))
 
-        # self-consistent breakdown (fixed point; paper main text: 0.71)
-        @test breakdown_reliability(bstar, sigma, tau2) ≈ 0.707 atol = 2e-3
-        # cluster-robust breakdown at the paper's person-cluster psi = 2.33: 0.61
-        @test breakdown_reliability(bstar, sigma, tau2; psi=2.330) ≈ 0.613 atol = 2e-3
+        lambda_cov = reliability_from_repeats(x, z)
+        lambda_equal = reliability_from_repeats(x, z; method=:equal_variance)
+        @test n == 147
+        @test bstar ≈ 0.0908758941551 atol = 1e-12
+        @test sigma / sqrt(tau2) ≈ 0.0219814978882 atol = 1e-12
+        @test lambda_cov ≈ 0.5749036782323 atol = 1e-12
+        @test lambda_equal ≈ 0.5514169767299 atol = 1e-12
 
-        # within reliability 0.65 (Bound-Krueger first difference): FLAGGED
-        rep = eiv_adequacy(; beta_star=bstar, sigma=sigma, tau_star2=tau2,
-                           n=n, d_K=d_K, reliability=0.65, pilot=:point)
-        @test rep.eta ≈ 0.848 atol = 2e-3            # paper: |eta| = 0.85
-        @test rep.implied_size ≈ 0.1356 atol = 1e-3  # paper: 13.6%
-        @test rep.verdict === :FLAGGED
-        # ... but CERTIFIED under person clustering (paper Table 4: size 8.6%)
-        repcr = eiv_adequacy(; beta_star=bstar, sigma=sigma, tau_star2=tau2,
-                             n=n, d_K=d_K, reliability=0.65, pilot=:point,
-                             psi=2.330)
-        @test repcr.eta ≈ 0.556 atol = 2e-3
-        @test repcr.implied_size ≈ 0.086 atol = 1e-3
-        @test repcr.verdict === :POINT_PASS
-        @test repcr.breakdown ≈ 0.613 atol = 2e-3
+        rcov = eiv_adequacy_summary(bstar, sigma, tau2, n, d_K;
+                                    reliability=lambda_cov, pilot=:point)
+        req = eiv_adequacy_summary(bstar, sigma, tau2, n, d_K;
+                                   reliability=lambda_equal, pilot=:point)
+        @test rcov.breakdown ≈ 0.863710397039 atol = 1e-7
+        @test req.breakdown ≈ rcov.breakdown atol = 1e-14
+        @test rcov.statistic.beta_corr ≈ 0.1580715128394 atol = 1e-12
+        @test req.statistic.beta_corr ≈ 0.1648043096058 atol = 1e-12
+        # The covariance reliability correction is the reverse-direction IV
+        # ratio algebraically; it is corroboration, not external validation.
+        @test rcov.statistic.beta_corr ≈ dot(x, y) / dot(x, z) atol = 1e-12
+        @test rcov.eta ≈ 3.056917186720 atol = 1e-12
+        @test req.eta ≈ 3.363210998044 atol = 1e-12
+        @test rcov.implied_size ≈ 0.863669337612 atol = 1e-12
+        @test req.implied_size ≈ 0.919728454662 atol = 1e-12
+        @test rcov.verdict === :FLAGGED && req.verdict === :FLAGGED
 
-        # level reliability 0.82: point pass, formal certificate FAILS (paper ddagger note)
-        repp = eiv_adequacy(; beta_star=bstar, sigma=sigma, tau_star2=tau2,
-                            n=n, d_K=d_K, reliability=0.82, pilot=:point)
-        @test repp.implied_size ≈ 0.0638 atol = 1e-3  # paper: 6.4%
-        @test repp.verdict === :POINT_PASS   # paper labels this row point pass / formal fail
-        repf = eiv_adequacy(; beta_star=bstar, sigma=sigma, tau_star2=tau2,
-                            n=n, d_K=d_K, reliability=0.82)   # default: conservative
-        @test repf.verdict === :FLAGGED
-        @test repf.statistic.eta_upper ≈ 0.707 atol = 2e-3
+        # Rouse's correlated-report sensitivity uses rounded published inputs.
+        rouse = eiv_adequacy_summary(0.071, 1.0, 1 / 0.016^2, 445, 4;
+                                     reliability=0.748, pilot=:point)
+        @test rouse.breakdown ≈ 0.871831787842 atol = 1e-7
+        @test rouse.statistic.beta_corr ≈ 0.0949197860963 atol = 1e-12
+        @test rouse.eta ≈ 1.494986631016 atol = 1e-12
+        @test rouse.implied_size ≈ 0.321249033980 atol = 1e-12
+        @test rouse.verdict === :FLAGGED
 
-        # summary-form report renders without N/T
-        out = sprint(show, MIME("text/plain"), repf)
-        @test occursin("n=4165", out) && occursin("d_K=601", out)
+        # Summary-form report renders without N/T.
+        out = sprint(show, MIME("text/plain"), rcov)
+        @test occursin("n=147", out) && occursin("d_K=4", out)
         @test !occursin("N=0", out)
     end
 
@@ -232,7 +260,7 @@ end
         rep = eiv_adequacy(; beta_star=0.06, sigma=0.33, tau_star2=127.8,
                            n=8930, d_K=221, reliability=0.898)
         out = sprint(show, MIME("text/plain"), rep)
-        @test occursin("Measurement Error (Paper B)", out)
+        @test occursin("Measurement Error", out)
         @test occursin("Within reliability lambda_hat = 0.898", out)
         @test occursin("Threshold (delta=0.05) = 0.652", out)
         @test occursin("corrected beta0", out)

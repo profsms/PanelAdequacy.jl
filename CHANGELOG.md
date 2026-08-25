@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0 - 2026-08-25
+
+- Add `reliability_from_repeats` with covariance and equal-variance methods.
+- Bundle the public Ashenfelter--Krueger twins extract and reproduce the current
+  twins table, including the Rouse correlated-report sensitivity.
+- Replace obsolete PSID article locks while retaining the dataset for backward
+  compatibility; lock the Design 4/5 exact-normal endpoints at 3.58 and 3.67.
+- Correct stale cluster-direction guidance and refresh data provenance,
+  documentation, and the current manuscript snapshot.
+
 ## 0.5.1 - 2026-08-04
 
 - Keep `cycle_report` output concise by hiding its detailed diagnostic notes in default REPL rendering.

@@ -25,8 +25,9 @@ The remaining files are the exact analysis extracts used by the papers:
 | Use | Julia file(s) | R object | Source |
 |---|---|---|---|
 | Paper A diffuse check | `f_score_panel.csv` | `fscore` | Author-assembled Warsaw, Budapest, and Prague exchange filings, 2010--2024 |
-| Paper B V-Dem application | `eiv_vdem_panel.csv`, `vdem_gate1.csv` | `vdem` | V-Dem measurement-model output and Maddison Project Database 2020 |
-| Paper B mechanism illustration | `psid_wages_panel.csv` | `psid` | Cornwell--Rupert PSID extract distributed by `plm` |
+| FE--EIV V-Dem application | `eiv_vdem_panel.csv`, `vdem_gate1.csv` | `vdem` | V-Dem measurement-model output and Maddison Project Database 2020 |
+| FE--EIV repeated-report application | `twins.csv` | `twins` | `RbyExample::twins` 0.0.100; Ashenfelter--Krueger design |
+| Legacy measurement-error example | `psid_wages_panel.csv` | `psid` | Cornwell--Rupert PSID extract distributed by `plm` |
 | Paper C certified design | `castle_panel.csv` | `castle` | Cheng--Hoekstra castle-doctrine replication panel |
 | Paper C flagged design | `divorce_panel.csv` | `divorce` | Stevenson--Wolfers data distributed by `bacondecomp` |
 
@@ -35,6 +36,14 @@ published-number fixture; R's `vdem` object contains the columns needed to
 recreate that subset. Dataset help, the papers, and their replication archives
 record variable definitions, transformations, citations, and public-extract
 qualifications.
+
+`data/twins.csv` is an unmodified export of `RbyExample::twins` version
+0.0.100 (GPL >= 2), whose documentation attributes the study to Ashenfelter
+and Krueger (1994), *American Economic Review* 84(5), 1157--1173. It contains
+183 rows and 16 variables; the article uses the 147 complete observations on
+`DLHRWAGE`, `DEDUC1`, `DEDUC2`, `DTEN`, `DMARRIED`, and `DUNCOV`. SHA-256:
+`8565aa0a3d1f0b8e99d091f872905bdeb0ec8fc1b4aec46158bd1ebb421ffa08`.
+The data retain their upstream terms and are not relicensed under MIT.
 
 The Kline--Saggio--Sølvsten worker--firm test extract is intentionally not
 bundled: its public upstream repository does not state a redistribution license.

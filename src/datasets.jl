@@ -3,6 +3,12 @@
 
 const _DATADIR = normpath(joinpath(@__DIR__, "..", "data"))
 
+function _csv_unquote(field::AbstractString)
+    length(field) >= 2 && first(field) == '"' && last(field) == '"' ||
+        return String(field)
+    return replace(String(field[2:end-1]), "\"\"" => "\"")
+end
+
 """
     datasets() -> Vector{String}
 
@@ -45,14 +51,14 @@ eiv_adequacy(collect(skipmissing(d.ly[keep])), collect(skipmissing(d.v2x_polyarc
 function load_dataset(name::AbstractString)
     lines = readlines(datapath(name))
     isempty(lines) && throw(ArgumentError("empty dataset '$name'"))
-    header = Symbol.(split(lines[1], ','))
+    header = Symbol.(_csv_unquote.(split(lines[1], ',')))
     ncol = length(header)
     raw = [String[] for _ in 1:ncol]
     for ln in @view lines[2:end]
         isempty(strip(ln)) && continue
         vals = split(ln, ',', limit=ncol)
         for j in 1:ncol
-            push!(raw[j], j <= length(vals) ? String(vals[j]) : "")
+            push!(raw[j], j <= length(vals) ? _csv_unquote(vals[j]) : "")
         end
     end
     cols = map(raw) do col

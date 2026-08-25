@@ -85,8 +85,9 @@ end
 """
     reliability_from_ratio(r, within_sd; scale=:observed) -> Float64
 
-Measurement-error SD implied by an external reliability ratio `r` (PSID-style
-validation studies). With the documented default `scale=:observed`, `within_sd`
+Measurement-error SD implied by an external reliability ratio `r` from a
+validation or repeat-measurement study. With the documented default
+`scale=:observed`, `within_sd`
 is the SD of the observed regressor and
 `sigma_nu = sqrt(1-r) * within_sd`. Use `scale=:signal` only when `within_sd` is
 the latent signal SD; then `sigma_nu = sqrt((1-r)/r) * within_sd`.
@@ -99,6 +100,50 @@ function reliability_from_ratio(r::Real, within_sd::Real;
         "scale must be :observed or :signal"))
     factor = scale === :observed ? sqrt(1 - r) : sqrt((1 - r) / r)
     return factor * within_sd
+end
+
+"""
+    reliability_from_repeats(first, second; method=:covariance) -> Float64
+
+Estimate the reliability of `first` from two measurements of the same latent
+regressor after applying the **identical projection and complete-case sample**
+to both. The default covariance estimator is
+
+    cov(first, second) / var(first)
+
+and identifies the first measurement's reliability when the two classical
+reporting errors are uncorrelated; it does not require equal error variances.
+Set `method=:equal_variance` for
+
+    1 - var(first - second) / (2var(first)),
+
+which additionally imposes equal reporting-error variances. Correlation across
+reporting errors invalidates both formulas and must be modeled or examined as a
+sensitivity. The estimate is returned without truncation so assumption or
+sampling failures remain visible; [`eiv_adequacy`](@ref) requires a reliability
+in `(0, 1]`.
+"""
+function reliability_from_repeats(first_measure::AbstractVector{<:Real},
+                                  second_measure::AbstractVector{<:Real};
+                                  method::Symbol=:covariance)
+    length(first_measure) == length(second_measure) || throw(ArgumentError(
+        "first_measure and second_measure must have equal length"))
+    length(first_measure) >= 2 || throw(ArgumentError(
+        "repeated measurements must contain at least two observations"))
+    method in (:covariance, :equal_variance) || throw(ArgumentError(
+        "method must be :covariance or :equal_variance"))
+    x = Float64.(first_measure)
+    z = Float64.(second_measure)
+    all(isfinite, x) && all(isfinite, z) || throw(ArgumentError(
+        "repeated measurements must be finite and use a common complete-case sample"))
+    x .-= mean(x)
+    z .-= mean(z)
+    xx = sum(abs2, x)
+    xx > 0 || throw(ArgumentError("first_measure has zero variance"))
+    if method === :covariance
+        return dot(x, z) / xx
+    end
+    return 1 - sum(abs2, x .- z) / (2xx)
 end
 
 """
@@ -141,10 +186,10 @@ contributes nothing to `d_ne`.
     `sum_g ||M a^(g) - a^(g)||^2 / tau*2` directly and needs neither condition.
 
 In the lead V-Dem application country effects are nested in country clusters
-while the 59 year effects are not, against `G = 163`, so `ratio_ne ~ 0.36`; in
-the PSID application person effects are nested and the 7 year effects are not,
-against `G = 595`, giving `ratio_ne ~ 0.012`. Those two cluster-robust readings
-therefore do not carry the same warrant.
+while the 59 year effects are not, against `G = 163`, so `ratio_ne ~ 0.36` and
+the direct diagnostic is load-bearing. The repeated-report twins application
+samples independent pairs and therefore uses the baseline i.i.d. theorem; it
+does not invoke this cluster condition or a `psi` rescaling.
 """
 function cluster_diagnostics(xt::AbstractVector{<:Real}, cluster::AbstractVector,
                              fe_levels::AbstractVector; tau_star2::Real)

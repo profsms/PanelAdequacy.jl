@@ -43,7 +43,7 @@ include("published_tests.jl")
 @testset "bundled datasets API" begin
     @test Set(datasets()) == Set(["vdem_gate1", "eiv_vdem_panel",
         "psid_wages_panel", "castle_panel", "divorce_panel", "f_score_panel",
-        "grunfeld_panel"])
+        "grunfeld_panel", "twins"])
     @test isfile(datapath("castle_panel"))
     @test isfile(datapath("castle_panel.csv"))
     @test_throws ArgumentError datapath("nope")
@@ -51,6 +51,12 @@ include("published_tests.jl")
     @test haskey(d, :iso) && haskey(d, :v2x_polyarchy)
     @test eltype(d.iso) == String                      # non-numeric stays String
     @test Missing <: eltype(d.v2x_polyarchy)           # numeric-with-blanks -> Union{Missing,Float64}
+    twins = load_dataset("twins")
+    @test length(twins.DLHRWAGE) == 183
+    @test Missing <: eltype(twins.DLHRWAGE)
+    @test count(.!ismissing.(twins.DLHRWAGE) .& .!ismissing.(twins.DEDUC1) .&
+                .!ismissing.(twins.DEDUC2) .& .!ismissing.(twins.DTEN) .&
+                .!ismissing.(twins.DMARRIED) .& .!ismissing.(twins.DUNCOV)) == 147
     # the bundled dataset drives the diagnostic directly (article-reproducibility)
     keep = .!ismissing.(d.ly) .& .!ismissing.(d.v2x_polyarchy) .& .!ismissing.(d.v2x_polyarchy_sd)
     rep = eiv_adequacy(Float64.(d.ly[keep]), Float64.(d.v2x_polyarchy[keep]),
@@ -176,7 +182,7 @@ end
                            0.28, 0.652, 0.82, 0.053, :CERTIFIED, 0.05, 0.05,
                            ["corrected, conservative pilot used"])
         out = sprint(show, MIME("text/plain"), r)
-        @test occursin("Panel Adequacy Report — Measurement Error (Paper B)", out)
+        @test occursin("Panel Adequacy Report — Measurement Error", out)
         @test occursin("lambda_hat = 0.868", out)
         @test occursin("|eta| = 0.280", out)
         @test occursin("Threshold (delta=0.05) = 0.652", out)

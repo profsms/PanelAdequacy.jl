@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0 - 2026-09-01
+
+- Align the TWFE module with the current *Is Bias Correction Enough?* theory:
+  direct CR1 cluster-score normalization is now the default, while AR(1),
+  i.i.d., and user-supplied scales remain explicit sensitivity routes.
+- Separate the combined-class worst-case size envelope from the signed
+  directional plug-in. Reports now label the former as a uniform upper bound,
+  never as realized rejection probability, and expose directional alignment.
+- Replace the dense fixed-effect bootstrap regression with an absorbed,
+  cluster-score implementation, making the 2,284-county application practical.
+- Bundle the exact 15,988-row Callaway--Sant'Anna minimum-wage analysis extract
+  and lock its 29.3% envelope, 27.8% directional diagnostic, and sign-reversal
+  calibration.
+- Add never-treated versus not-yet-treated comparison-group selection, direct
+  and AR(1) scale outputs, CR1 standard errors, sign-reversal RMS, and a
+  fixed-panel-length warning when `T` is large relative to the cluster count.
+- Retain the old realized-size and bootstrap names only as deprecated
+  compatibility aliases to the newly explicit directional and envelope fields.
+
 ## 0.6.0 - 2026-08-25
 
 - Add `reliability_from_repeats` with covariance and equal-variance methods.

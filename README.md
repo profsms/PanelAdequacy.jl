@@ -11,7 +11,7 @@ Install the current release from GitHub:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.6.0")
+Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.7.0")
 ```
 
 After registration in Julia General, `Pkg.add("PanelAdequacy")` will be sufficient.
@@ -29,9 +29,12 @@ report = cycle_report(d.invest, d.capital, d.firm, d.year; controls=d.value, int
 
 - `leverage_report(y, x, unit, time)` is the diffuse-regime diagnostic. It checks treatment concentration and leverage balance and compares df-corrected and HC0-HC3 inference.
 - `cycle_report(y, x, unit, time)` is the concentrated-regime workflow from Paper A. It reports capture, granularity, an exact sign-flip test, and an exact confidence set.
-- `eiv_adequacy(y, x, unit, time; ...)` screens continuous-regressor measurement error under the exact-normal mapping and conservative certificate in *Fixed-Effect Saturation Is Not Weak Identification*.
+- `eiv_adequacy(y, x, unit, time; ...)` screens continuous-regressor measurement error under the exact-normal mapping and conservative certificate in *Breakdown Reliability for Saturated Fixed-Effect Inference*.
 - `reliability_from_repeats(first, second)` estimates within reliability from identically projected repeated measurements; use its equal-variance option only when that added restriction is defensible.
-- `twfe_adequacy(y, unit, time, first_treat)` screens staggered-DiD/TWFE designs for heterogeneous-effect exposure.
+- `twfe_adequacy(y, unit, time, first_treat)` reports the combined-class
+  worst-case size envelope and a signed directional plug-in. Direct CR1
+  cluster-score normalization is the default; `cluster=:ar1`, `cluster=:iid`,
+  and a positive user-supplied `psi` are sensitivity routes.
 
 Default `cycle_report` rendering is concise. Detailed caveats remain available in `report.notes` and as a numbered display through `show_notes(report)`.
 
@@ -65,13 +68,14 @@ Measurement-error reports can additionally return `CERTIFIED` when the formal up
 
 The sibling R package is [panelcert](https://github.com/profsms/panelcert). Fixed CSV designs and CI enforce agreement to `1e-12` on numerical outputs and exact agreement on integer fields, verdicts, and packed supports.
 
-Dataset access follows language conventions: Julia exposes `datasets()`, `datapath()`, and `load_dataset()`; R exposes the same bundled panels through `LazyData`. Redistributable paper panels, including the V-Dem panel, public repeated-report twins extract, and public-domain canonical 11-firm Grunfeld showcase, are bundled for offline replication. `DATA_SOURCES.md` records pinned provenance and explains why the KSS test extract uses a checksum-pinned direct download instead.
+Dataset access follows language conventions: Julia exposes `datasets()`, `datapath()`, and `load_dataset()`; R exposes the same bundled panels through `LazyData`. Redistributable paper panels, including V-Dem, repeated-report twins, the 2,284-county minimum-wage application, and the public-domain canonical 11-firm Grunfeld showcase, are bundled for offline replication. `DATA_SOURCES.md` records pinned provenance and explains why the KSS test extract uses a checksum-pinned direct download instead.
 
 ## Citation
 
-Please cite both working papers when the corresponding diagnostics are used:
+Please cite the corresponding working paper when a diagnostic is used:
 
 - Halkiewicz, Stanislaw M. S. (2026). *Exact Inference in Fixed-Effect Regressions with Concentrated Identifying Variation*.
-- Halkiewicz, Stanislaw M. S. (2026). *Fixed-Effect Saturation Is Not Weak Identification: Certifying Inference under Measurement Error*.
+- Halkiewicz, Stanislaw M. S. (2026). *Breakdown Reliability for Saturated Fixed-Effect Inference*.
+- Halkiewicz, Stanislaw M. S. (2026). *Is Bias Correction Enough? A Design Diagnostic for TWFE Inference under Treatment-Effect Heterogeneity*.
 
 See `CITATION.cff` for machine-readable metadata.

@@ -8,8 +8,8 @@ variance-estimator, measurement-error, and TWFE-heterogeneity failures.
 
 Current source map:
 - Paper A — exact contrast inference under concentrated identifying variation
-- *Fixed-Effect Saturation Is Not Weak Identification* — measurement-error adequacy
-- Paper C — staggered-DiD / TWFE-heterogeneity adequacy
+- *Breakdown Reliability for Saturated Fixed-Effect Inference* — measurement-error adequacy
+- staggered-DiD / TWFE-heterogeneity adequacy
 - diffuse companion — leverage / variance diagnostics
 """
 module PanelAdequacy
@@ -50,8 +50,8 @@ include("datasets.jl")
 const PATHOLOGY_TITLES = Dict(
     :leverage            => "Leverage / Variance (diffuse-regime companion)",
     :measurement_error   => "Measurement Error",
-    :twfe_heterogeneity  => "TWFE Heterogeneity (Paper C)",
-    :cycle_inference     => "Concentrated Identifying Variation (Paper A)",
+    :twfe_heterogeneity  => "TWFE Heterogeneity",
+    :cycle_inference     => "Concentrated Identifying Variation",
 )
 
 """
@@ -137,7 +137,8 @@ function _statistic_lines(pathology::Symbol, s::NamedTuple)
             push!(lines, @sprintf("  restricted ladder: Gamma_c+e = %.3f | Gamma_evt = %.3f | Gamma_coh = %.3f",
                                   s.Gamma_cmb, s.Gamma_evt, s.Gamma_coh))
         haskey(s, :Gamma_CR) &&
-            push!(lines, @sprintf("Cluster-robust (psi_hat = %.3f): Gamma_c+e,CR = %.3f | Gamma_CR = %.3f",
+            push!(lines, @sprintf("Cluster normalization (%s; psi_hat = %.3f): Gamma_c+e,CR = %.3f | Gamma_CR = %.3f",
+                                  haskey(s, :normalization) ? String(s.normalization) : "legacy",
                                   s.psi_hat, s.Gamma_cmb_CR, s.Gamma_CR))
         haskey(s, :beta) &&
             push!(lines, @sprintf("TWFE beta_hat = %.4g   sigma = %.4g", s.beta, s.sigma))
@@ -145,17 +146,29 @@ function _statistic_lines(pathology::Symbol, s::NamedTuple)
             push!(lines, @sprintf("Covariance-corrected pilots c_S/sigma: c+e = %.3g | evt = %.3g | coh = %.3g",
                                   s.pilot_cmb, s.pilot_evt, s.pilot_coh))
         if haskey(s, :size_cmb)
-            l = @sprintf("Worst-case size: combined-class = %.1f%% (headline) | cohort %.1f%% | event %.1f%%",
+            l = @sprintf("Worst-case size envelope: combined-class = %.1f%% (headline) | cohort %.1f%% | event %.1f%%",
                          100*s.size_cmb, 100*s.size_coh, 100*s.size_evt)
             push!(lines, l)
         end
         if haskey(s, :boot) && s.boot !== nothing
             b = s.boot
-            push!(lines, @sprintf("  wild bootstrap (B=%d): combined median %.1f%%, 95%% [%.1f, %.1f]; psi in [%.2f, %.2f]",
-                                  b.n, 100*b.cmb_med, 100*b.cmb_lo, 100*b.cmb_hi, b.psi_lo, b.psi_hi))
+            push!(lines, @sprintf("  wild envelope (B=%d): median %.1f%%, 95%% [%.1f, %.1f]; psi in [%.2f, %.2f]",
+                                  b.n, 100*b.envelope_med, 100*b.envelope_lo,
+                                  100*b.envelope_hi, b.psi_lo, b.psi_hi))
         end
-        haskey(s, :size_realized) &&
-            push!(lines, @sprintf("Realized-profile size (CR) = %.1f%%", 100*s.size_realized))
+        if haskey(s, :size_directional)
+            push!(lines, @sprintf("Directional plug-in: eta = %+.3f (alignment %+.3f), size %.1f%%",
+                                  s.eta_directional, s.directional_alignment,
+                                  100*s.size_directional))
+            if haskey(s, :boot) && s.boot !== nothing
+                b = s.boot
+                push!(lines, @sprintf("  wild directional size: median %.1f%%, 95%% [%.1f, %.1f]",
+                                      100*b.directional_med, 100*b.directional_lo,
+                                      100*b.directional_hi))
+            end
+        end
+        haskey(s, :sign_reversal_rms) &&
+            push!(lines, @sprintf("Sign-reversal RMS threshold = %.4g", s.sign_reversal_rms))
     elseif pathology === :leverage && haskey(s, :max_leverage)
         line = @sprintf("Max leverage max_i H_ii = %.3f", s.max_leverage)
         haskey(s, :leverage_spread) &&
@@ -221,16 +234,26 @@ function Base.show(io::IO, ::MIME"text/plain", r::AdequacyReport)
         println(io, line)
     end
     if r.eta !== nothing
-        @printf(io, "Non-centrality |eta| = %.3f", abs(r.eta))
+        if r.pathology === :twfe_heterogeneity
+            @printf(io, "Worst-case |eta| envelope = %.3f", abs(r.eta))
+        else
+            @printf(io, "Non-centrality |eta| = %.3f", abs(r.eta))
+        end
         r.threshold !== nothing &&
             @printf(io, "   Threshold (delta=%.2g) = %.3f", r.delta, r.threshold)
         println(io)
     end
     r.breakdown !== nothing &&
         @printf(io, "Breakdown threshold = %.3f\n", r.breakdown)
-    r.implied_size !== nothing &&
-        @printf(io, "Implied size of nominal %.0f%% test: %.1f%%\n",
-                100 * r.alpha, 100 * r.implied_size)
+    if r.implied_size !== nothing
+        if r.pathology === :twfe_heterogeneity
+            @printf(io, "Worst-case size envelope for nominal %.0f%% test: %.1f%%\n",
+                    100 * r.alpha, 100 * r.implied_size)
+        else
+            @printf(io, "Implied size of nominal %.0f%% test: %.1f%%\n",
+                    100 * r.alpha, 100 * r.implied_size)
+        end
+    end
     if r.verdict === :CERTIFIED
         g = haskey(r.statistic, :gamma) ? r.statistic.gamma : nothing
         g === nothing ? @printf(io, "VERDICT: CERTIFIED at delta=%.2g", r.delta) :

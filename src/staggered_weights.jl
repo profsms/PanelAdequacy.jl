@@ -1,16 +1,13 @@
 # =============================================================================
 # Module C — staggered-DiD / TWFE-heterogeneity adequacy
 # SOURCE: Paper C, "Is Bias Correction Enough? A Design Diagnostic for TWFE
-# Inference under Treatment-Effect Heterogeneity" (paper_c_twfe_v1.tex, the
-# submitted version). The earlier title, "Stock-Yogo Critical Values for the
-# Two-Way Fixed-Effects t-Test under Treatment-Effect Heterogeneity", is
-# superseded; NO formula changed between the two drafts.
+# Inference under Treatment-Effect Heterogeneity" (paper_c_jae.tex and its
+# online supplement).
 #
-# The submitted paper states that Gamma, its restricted variants, psi_hat,
-# Gamma_CR, the covariance-corrected pilots and the implied sizes are ALL
-# implemented here, and that both audit tables reproduce from the two adoption
-# panels bundled with the package via reproduction/reproduce_with_package.jl.
-# Verified: 19/19 parity checks pass.
+# Gamma, its restricted variants, the direct cluster-score normalization,
+# covariance-corrected pilots, the worst-case envelope and the directional
+# plug-in are implemented here. The three applications reproduce from panels
+# bundled with the package via reproduction/reproduce_with_package.jl.
 #
 # Design statistics (pre-outcome, from the adoption pattern ALONE):
 #   Gamma      = sqrt(N1) ||w - u||_2,  w = Dt/n_w on treated cells, u = 1/N1
@@ -23,8 +20,8 @@
 #   threshold  (c/sigma) Gamma_{S,CR} <= eta†(alpha, delta) (Cor. cor-cv).
 #
 # Inference layer (needs the outcome):
-#   cluster    psi = sum_i d_i' R_i d_i / n_w, Gamma_{S,CR} = Gamma_S/sqrt(psi)
-#              (Thm. thm-cluster) — psi computed on the realized design.
+#   cluster    direct CR1 is the headline normalization; AR(1), iid, and a
+#              positive user-supplied psi remain available.
 #   pilot      COVARIANCE-AWARE (eq-pilot): each subspace pilot squares to
 #                c_S^2 = n_w max{0, (1/N1)||Pi_S(delta-mean)||^2
 #                                    - (1/N1) tr(Pi_S~ A Omega A' Pi_S~)},
@@ -32,6 +29,8 @@
 #              estimated by the fixed-design wild cluster bootstrap. Subtracting
 #              an average of marginal variances (the legacy scalar shrinkage)
 #              under-removes the projected noise when the ATT(g,t) share controls.
+#   direction  eta_dir,S = sqrt(n_w) (w-u)'P_S Delta_hat / q_hat, a signed
+#              companion to (not a replacement for) the worst-case envelope.
 #   bootstrap  fixed-design wild cluster bootstrap: D, w, Gamma_S held fixed,
 #              Y* = Yhat + v_i e_it (Rademacher per unit), recomputes the whole
 #              calibration; supplies Omega and the size intervals.
@@ -174,7 +173,9 @@ end
 # ------------------------------------------------------------------------------
 
 function _group_time_atts(uid::Vector{Int}, tid::Vector{Int}, ftc::Vector{Float64},
-                          y::Vector{Float64}, T::Int)
+                          y::Vector{Float64}, T::Int; controls::Symbol=:not_yet)
+    controls in (:not_yet, :never) ||
+        throw(ArgumentError("controls must be :not_yet or :never"))
     key = Dict{Tuple{Int,Int},Float64}()
     for k in eachindex(uid)
         key[(uid[k], tid[k])] = y[k]
@@ -186,7 +187,8 @@ function _group_time_atts(uid::Vector{Int}, tid::Vector{Int}, ftc::Vector{Float6
         gunits = findall(==(g), ftc)
         base = Int(g) - 1
         for t in Int(g):T
-            ctrl = findall(i -> ftc[i] > t, 1:N)   # not-yet-treated or never
+            ctrl = controls === :never ? findall(i -> !isfinite(ftc[i]), 1:N) :
+                                         findall(i -> ftc[i] > t, 1:N)
             gd = [key[(u, t)] - key[(u, base)] for u in gunits
                   if haskey(key, (u, t)) && haskey(key, (u, base))]
             cd = [key[(u, t)] - key[(u, base)] for u in ctrl
@@ -241,60 +243,114 @@ function _cov_pilots(gt, g_cell, t_cell, N1, bases, traces, n_w, sigma)
             cmb = pil(bases.Bcmb, traces.cmb))
 end
 
+function _directional_profile(gt, g_cell, t_cell, N1, B, w, n_w, sigma, psi)
+    delta = _delta_cell(gt, g_cell, t_cell, N1)
+    all(isfinite, delta) && isfinite(sigma) && sigma > 0 &&
+        isfinite(psi) && psi > 0 || return (eta=NaN, alignment=NaN)
+    profile = _proj(B, delta .- mean(delta))
+    exposure = _proj(B, w .- 1 / N1)
+    bias = dot(exposure, profile)
+    den = sqrt(dot(exposure, exposure) * dot(profile, profile))
+    return (eta=sqrt(n_w) * bias / (sigma * sqrt(psi)),
+            alignment=den > 0 ? bias / den : 0.0)
+end
+
+function _group_time_map(uid, tid, ftc, N, T; controls::Symbol=:not_yet)
+    controls in (:not_yet, :never) ||
+        throw(ArgumentError("controls must be :not_yet or :never"))
+    n = length(uid)
+    obs = zeros(Int, N, T)
+    for k in eachindex(uid); obs[uid[k], tid[k]] = k; end
+    cohorts = sort(unique(filter(g -> isfinite(g) && g > 1, ftc)))
+    keys = Tuple{Int,Int}[]
+    for g0 in cohorts
+        g = Int(g0); base = g - 1
+        for t in g:T
+            gunits = findall(==(g0), ftc)
+            ctrl = controls === :never ? findall(!isfinite, ftc) :
+                                         findall(x -> x > t, ftc)
+            filter!(u -> obs[u, t] > 0 && obs[u, base] > 0, gunits)
+            filter!(u -> obs[u, t] > 0 && obs[u, base] > 0, ctrl)
+            !isempty(gunits) && !isempty(ctrl) && push!(keys, (g, t))
+        end
+    end
+    L = zeros(n, length(keys))
+    for (j, (g, t)) in enumerate(keys)
+        base = g - 1
+        gunits = findall(==(Float64(g)), ftc)
+        ctrl = controls === :never ? findall(!isfinite, ftc) :
+                                     findall(x -> x > t, ftc)
+        filter!(u -> obs[u, t] > 0 && obs[u, base] > 0, gunits)
+        filter!(u -> obs[u, t] > 0 && obs[u, base] > 0, ctrl)
+        for u in gunits
+            L[obs[u, t], j] = 1 / length(gunits)
+            L[obs[u, base], j] = -1 / length(gunits)
+        end
+        for u in ctrl
+            L[obs[u, t], j] = -1 / length(ctrl)
+            L[obs[u, base], j] = 1 / length(ctrl)
+        end
+    end
+    return keys, L
+end
+
 # ------------------------------------------------------------------------------
 # Fixed-design wild cluster bootstrap: Omega + calibration-uncertainty draws.
 # ------------------------------------------------------------------------------
 
 function _wild_bootstrap(uid, tid, ftc, D, Dt, y, N, T, n_w, treated, N1,
-                         g_cell, t_cell, bases, gammas_CR, d_K, cohorts, gt0,
-                         B::Int, seed::Int)
+                         g_cell, t_cell, d_K, gt0, B::Int, seed::Int,
+                         controls::Symbol)
     n = length(uid)
-    # saturated mean surface: unit + time + cohort-by-time (treated cells)
-    Umat = zeros(n, N); for k in 1:n; Umat[k, uid[k]] = 1.0; end
-    Tmat = zeros(n, T); for k in 1:n; Tmat[k, tid[k]] = 1.0; end
-    gtlab = [D[k] == 1.0 ? "$(Int(ftc[uid[k]]))_$(tid[k])" : "none" for k in 1:n]
-    GTmat = _indicator_basis(gtlab)
-    X = hcat(Umat, Tmat, GTmat)
-    yhat = X * (pinv(X' * X) * (X' * y))
-    e = y .- yhat
-
-    keys_gt = sort(collect(keys(gt0)))
-    flat(gt) = Float64[get(gt, k, NaN) for k in keys_gt]
+    # Saturated unit + time + treated-(g,t) surface after absorbing the fixed
+    # effects. Avoids the dense n x N unit-dummy matrix and scales to counties.
+    keys_gt, L = _group_time_map(uid, tid, ftc, N, T; controls=controls)
+    m = length(keys_gt)
+    kidx = Dict(k => j for (j, k) in enumerate(keys_gt))
+    Z = zeros(n, m)
+    for k in eachindex(D)
+        if D[k] == 1.0
+            key = (Int(ftc[uid[k]]), tid[k])
+            haskey(kidx, key) && (Z[k, kidx[key]] = 1.0)
+        end
+    end
+    Zt = zeros(n, m)
+    for j in 1:m
+        Zt[:, j] = _twoway_demean(Z[:, j], uid, tid, N, T)
+    end
+    yt = _twoway_demean(y, uid, tid, N, T)
+    fit = Zt * (pinv(Zt' * Zt) * (Zt' * yt))
+    e = yt .- fit
+    yhat = y .- e
+    att_center = L' * yhat
+    score = zeros(m, N)
+    for k in eachindex(uid), j in 1:m
+        score[j, uid[k]] += L[k, j] * e[k]
+    end
 
     dof = n - d_K - 1
     rng = MersenneTwister(seed)
-    rows_sigma = Float64[]; rows_psi = Float64[]
-    gtmat = Vector{Vector{Float64}}()
-    eta_real = Float64[]
+    rows_sigma = Float64[]; rows_psi_ar1 = Float64[]
+    rows_psi_direct = Float64[]; gtmat = Vector{Vector{Float64}}()
     for _ in 1:B
         v = rand(rng, (-1.0, 1.0), N)
         ystar = yhat .+ v[uid] .* e
-        yt = _twoway_demean(ystar, uid, tid, N, T)
-        beta = dot(Dt, yt) / n_w
-        resid = yt .- beta .* Dt
+        ytw = _twoway_demean(ystar, uid, tid, N, T)
+        beta = dot(Dt, ytw) / n_w
+        resid = ytw .- beta .* Dt
         sigma = sqrt(sum(abs2, resid) / dof)
         rho = _rho_ar1(resid, uid, tid)
-        psi = _psi_parametric(Dt, uid, tid, rho; kind=:ar1)
-        (isfinite(psi) && psi > 0) || continue
-        gt, _ = _group_time_atts(uid, tid, ftc, ystar, T)
-        push!(rows_sigma, sigma); push!(rows_psi, psi); push!(gtmat, flat(gt))
-        # realized cluster-robust eta from cohort means
-        cm = _cohort_means(gt, cohorts)
-        cell = Float64[get(cm, g_cell[k], NaN) for k in 1:N1]
-        good = .!isnan.(cell)
-        if count(good) >= 2
-            w = Dt[treated] ./ sum(Dt[treated])
-            ab = mean(cell[good])
-            er = (dot(w[good], cell[good]) / sum(w[good]) - ab) * sqrt(n_w) / sigma
-            push!(eta_real, er / sqrt(psi))
-        else
-            push!(eta_real, NaN)
-        end
+        psi_ar1 = _psi_parametric(Dt, uid, tid, rho; kind=:ar1)
+        psi_direct = _psi_direct(Dt, resid, uid, n_w, sigma^2, N)
+        (isfinite(psi_ar1) && psi_ar1 > 0 &&
+         isfinite(psi_direct) && psi_direct > 0) || continue
+        push!(rows_sigma, sigma); push!(rows_psi_ar1, psi_ar1)
+        push!(rows_psi_direct, psi_direct)
+        push!(gtmat, vec(att_center .+ score * v))
     end
-    # Omega = wild-cluster covariance of the group-time vector
-    G = reduce(hcat, gtmat)'          # (ndraw x m)
-    Omega = cov(G; dims=1)
-    return Omega, rows_sigma, rows_psi, gtmat, eta_real, keys_gt
+    # Exact covariance under the fitted Rademacher wild-bootstrap distribution.
+    Omega = score * score'
+    return Omega, rows_sigma, rows_psi_ar1, rows_psi_direct, gtmat, keys_gt
 end
 
 # ------------------------------------------------------------------------------
@@ -366,27 +422,34 @@ end
 
 """
     twfe_adequacy(y, unit, time, first_treat; alpha=0.05, delta=0.05,
-                  cluster=:ar1, psi=nothing, bootstrap=999, seed=20260715)
+                  cluster=:direct, psi=nothing, controls=:not_yet,
+                  bootstrap=999, seed=20260715)
         -> AdequacyReport
 
-Full TWFE-heterogeneity audit (Paper C). Computes the restricted design-statistic
-ladder, the cluster-robust rescaling `Gamma_{S,CR} = Gamma_S/sqrt(psi_hat)`, the
-COVARIANCE-AWARE pilots `c_S/sigma` (eq-pilot; `Omega` from a fixed-design wild
-cluster bootstrap of `bootstrap` draws), the combined-class worst-case implied
-size (the headline) with its bootstrap median and interval, and the verdict.
+Full TWFE-heterogeneity audit. Computes the restricted design-statistic
+ladder, direct CR1 rescaling `Gamma_{S,CR} = Gamma_S/sqrt(psi_hat)`, covariance-
+aware pilots `c_S/sigma`, the combined-class worst-case size envelope, and the
+signed directional plug-in. Wild-cluster intervals quantify uncertainty in both
+outcome-derived objects.
 
 - `bootstrap`: number of wild-cluster draws (`>0` enables the covariance
   correction and the size intervals; `0` falls back to the raw pilot with a note).
-- `cluster = :ar1` (default) or `:iid`, or pass `psi = <value>`.
+- `cluster = :direct` (default), `:ar1`, or `:iid`; a positive `psi` overrides it.
+- `controls = :not_yet` (including never-treated) or `:never`.
 - Always-treated units are dropped (setup g >= 2), with a note.
 """
 function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
                        time::AbstractVector{<:Real}, first_treat::AbstractVector;
                        alpha::Real=0.05, delta::Real=0.05,
-                       cluster::Symbol=:ar1, psi::Union{Nothing,Real}=nothing,
+                       cluster::Symbol=:direct, psi::Union{Nothing,Real}=nothing,
+                       controls::Symbol=:not_yet,
                        bootstrap::Integer=999, seed::Integer=20260715)
-    cluster in (:ar1, :iid) ||
-        throw(ArgumentError("cluster must be :ar1 or :iid (or pass psi=...)"))
+    cluster in (:direct, :ar1, :iid) ||
+        throw(ArgumentError("cluster must be :direct, :ar1, or :iid"))
+    controls in (:not_yet, :never) ||
+        throw(ArgumentError("controls must be :not_yet or :never"))
+    psi === nothing || (isfinite(psi) && psi > 0) ||
+        throw(ArgumentError("psi must be positive and finite"))
     uid0, tid0, N0, T, ftc0 = _staggered_codes(unit, time, first_treat)
     n0 = length(uid0)
     length(y) == n0 || throw(ArgumentError("y must have length n = $n0"))
@@ -416,30 +479,27 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
 
     # ---- cluster layer ----
     rho_ar1 = _rho_ar1(resid, uid, tid)
-    psi_driven = _psi_driven(Dt, resid, uid, n_w, sigma^2, N)
+    psi_ar1 = _psi_parametric(Dt, uid, tid, rho_ar1; kind=:ar1)
+    psi_direct = _psi_direct(Dt, resid, uid, n_w, sigma^2, N)
+    normalization = psi !== nothing ? :user_supplied : cluster
     psi_hat = psi !== nothing ? Float64(psi) :
-              cluster === :iid ? 1.0 : _psi_parametric(Dt, uid, tid, rho_ar1; kind=:ar1)
+              cluster === :direct ? psi_direct : cluster === :ar1 ? psi_ar1 : 1.0
     CR = (unr=G.unr/sqrt(psi_hat), coh=G.coh/sqrt(psi_hat),
           evt=G.evt/sqrt(psi_hat), cmb=G.cmb/sqrt(psi_hat))
 
     # ---- group-time ATTs (point) ----
-    gt0, cohorts = _group_time_atts(uid, tid, ftc, yv, T)
-    cm0 = _cohort_means(gt0, cohorts)
-    cell0 = Float64[get(cm0, g_cell[k], NaN) for k in 1:N1]
-    good0 = .!isnan.(cell0)
-    att_bar = count(good0) >= 1 ? mean(cell0[good0]) : NaN
-    eta_real_iid = count(good0) >= 2 ?
-        (dot(w[good0], cell0[good0]) / sum(w[good0]) - att_bar) * sqrt(n_w) / sigma : NaN
-    eta_real_cr = eta_real_iid / sqrt(psi_hat)
+    gt0, cohorts = _group_time_atts(uid, tid, ftc, yv, T; controls=controls)
 
     # ---- covariance-aware pilots via the wild bootstrap ----
     bases = (Bcoh=G.Bcoh, Bevt=G.Bevt, Bcmb=G.Bcmb)
+    directional = _directional_profile(gt0, g_cell, t_cell, N1, G.Bcmb,
+                                       w, n_w, sigma, psi_hat)
     local pilots, size_pt, boot
     if bootstrap > 0 && !isempty(gt0)
-        Omega, bsig, bpsi, bgt, beta_eta, keys_gt =
+        Omega, bsig, bpsi_ar1, bpsi_direct, bgt, keys_gt =
             _wild_bootstrap(uid, tid, ftc, D, Dt, yv, N, T, n_w, treated, N1,
-                            g_cell, t_cell, bases, CR, d_K, cohorts, gt0,
-                            Int(bootstrap), Int(seed))
+                            g_cell, t_cell, d_K, gt0, Int(bootstrap), Int(seed),
+                            controls)
         # incidence A and centered projectors on the FIXED keys
         kidx = Dict(k => j for (j, k) in enumerate(keys_gt))
         m = length(keys_gt)
@@ -455,18 +515,44 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
         size_pt = (coh=_noncentral_size(pilots.coh * CR.coh, alpha),
                    evt=_noncentral_size(pilots.evt * CR.evt, alpha),
                    cmb=_noncentral_size(pilots.cmb * CR.cmb, alpha))
-        # per-draw combined-class sizes and psi intervals
-        draw_cmb = Float64[]
+        # Per-draw envelope and directional sizes under the selected scale.
+        bpsi = psi !== nothing ? fill(Float64(psi), length(bsig)) :
+               cluster === :direct ? bpsi_direct :
+               cluster === :ar1 ? bpsi_ar1 : ones(length(bsig))
+        draw_envelope = Float64[]; draw_directional = Float64[]
+        draw_directional_eta = Float64[]; draw_alignment = Float64[]
         for i in eachindex(bsig)
             gt = Dict(zip(keys_gt, bgt[i]))
             p = _cov_pilots(gt, g_cell, t_cell, N1, bases, traces, n_w, bsig[i])
-            push!(draw_cmb, _noncentral_size(p.cmb * G.cmb / sqrt(bpsi[i]), alpha))
+            push!(draw_envelope,
+                  _noncentral_size(p.cmb * G.cmb / sqrt(bpsi[i]), alpha))
+            dp = _directional_profile(gt, g_cell, t_cell, N1, G.Bcmb,
+                                      w, n_w, bsig[i], bpsi[i])
+            push!(draw_directional_eta, dp.eta)
+            push!(draw_directional, _noncentral_size(dp.eta, alpha))
+            push!(draw_alignment, dp.alignment)
         end
         q(v, p) = quantile(sort(filter(isfinite, v)), p)
-        boot = (n=length(bsig), cmb_med=q(draw_cmb, 0.5),
-                cmb_lo=q(draw_cmb, 0.025), cmb_hi=q(draw_cmb, 0.975),
-                cmb_p95=q(draw_cmb, 0.95), psi_lo=q(bpsi, 0.025), psi_hi=q(bpsi, 0.975),
-                Omega_trace_cmb=traces.cmb)
+        envelope_med=q(draw_envelope, 0.5); envelope_lo=q(draw_envelope, 0.025)
+        envelope_hi=q(draw_envelope, 0.975); envelope_p95=q(draw_envelope, 0.95)
+        boot = (n=length(bsig), envelope_med=envelope_med,
+                envelope_lo=envelope_lo, envelope_hi=envelope_hi,
+                envelope_p95=envelope_p95,
+                directional_med=q(draw_directional, 0.5),
+                directional_lo=q(draw_directional, 0.025),
+                directional_hi=q(draw_directional, 0.975),
+                directional_eta_med=q(draw_directional_eta, 0.5),
+                directional_eta_lo=q(draw_directional_eta, 0.025),
+                directional_eta_hi=q(draw_directional_eta, 0.975),
+                alignment_med=q(draw_alignment, 0.5),
+                psi_lo=q(bpsi, 0.025), psi_hi=q(bpsi, 0.975),
+                psi_direct_lo=q(bpsi_direct, 0.025),
+                psi_direct_hi=q(bpsi_direct, 0.975),
+                psi_ar1_lo=q(bpsi_ar1, 0.025), psi_ar1_hi=q(bpsi_ar1, 0.975),
+                Omega_trace_cmb=traces.cmb,
+                # v0.6 compatibility aliases: these are envelope fields.
+                cmb_med=envelope_med, cmb_lo=envelope_lo,
+                cmb_hi=envelope_hi, cmb_p95=envelope_p95)
         push!(notes, @sprintf("covariance-aware pilot (eq-pilot): Omega from %d wild-cluster draws; combined-class trace removes the shared-control estimation noise", boot.n))
     else
         # fallback: raw (uncorrected) projected dispersion, flagged
@@ -484,30 +570,37 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
         push!(notes, "bootstrap disabled: pilots are RAW projected dispersion, NOT covariance-corrected — the reported worst-case sizes are upward-biased (Paper C eq-pilot); set bootstrap>0")
     end
 
-    if psi_hat != 1.0
-        dir = psi_hat > 1 ?
-            "clustering shrinks the non-centrality here; the iid size is an upper bound" :
-            "clustering WORSENS the distortion here (psi < 1)"
-        push!(notes, @sprintf("psi_hat = %.3f (AR(1) rho = %.3f): %s (direction computed, not assumed)", psi_hat, rho_ar1, dir))
-    end
-    if psi_hat > 0 && max(psi_driven / psi_hat, psi_hat / psi_driven) > 1.5
-        push!(notes, @sprintf("estimator-driven cross-check psi = %.2f diverges from parametric %.2f (Paper C sec-feasible)", psi_driven, psi_hat))
-    end
+    push!(notes, @sprintf("normalization = %s: psi_hat = %.3f; direct CR1 psi = %.3f; AR(1) psi = %.3f (rho = %.3f)",
+                          String(normalization), psi_hat, psi_direct, psi_ar1, rho_ar1))
+    !isfinite(directional.eta) && push!(notes,
+        "directional plug-in unavailable because the group-time profile does not cover every treated cell")
     N < 40 && push!(notes, @sprintf("few clusters (G = %d): CR3/jackknife or wild bootstrap refinements advisable (Rem. sec-clusters)", N))
+    T / N > 0.25 && push!(notes, @sprintf(
+        "fixed-T, many-cluster approximation is strained (G = %d, T = %d)", N, T))
 
     eta_dag = _eta_dagger(alpha, delta)
     eta_cmb = pilots.cmb * CR.cmb                      # combined-class worst-case
     verdict = size_pt.cmb <= alpha + delta ? :CERTIFIED : :FLAGGED
     design = _design_summary_codes(uid, tid, N, T; xt=Dt)
     statistic = (Gamma=Gamma, Gamma_coh=G.coh, Gamma_evt=G.evt, Gamma_cmb=G.cmb,
-                 neg_share=neg_share, psi_hat=psi_hat, psi_driven=psi_driven,
-                 rho_ar1=rho_ar1, Gamma_CR=CR.unr, Gamma_coh_CR=CR.coh,
+                 neg_share=neg_share, psi_hat=psi_hat, normalization=normalization,
+                 psi_direct=psi_direct, psi_ar1=psi_ar1,
+                 psi_driven=psi_direct, rho_ar1=rho_ar1,
+                 Gamma_CR=CR.unr, Gamma_coh_CR=CR.coh,
                  Gamma_evt_CR=CR.evt, Gamma_cmb_CR=CR.cmb, beta=beta, sigma=sigma,
-                 att_bar=att_bar, N1=N1, n_w=n_w, n_cohorts=length(cohorts),
+                 se_cr1=sigma * sqrt(psi_direct / n_w),
+                 q_hat=sigma * sqrt(psi_direct),
+                 sign_reversal_rms=Gamma > 0 ? abs(beta) / Gamma : Inf,
+                 N1=N1, n_w=n_w, n_cohorts=length(cohorts),
                  pilot_coh=pilots.coh, pilot_evt=pilots.evt, pilot_cmb=pilots.cmb,
                  size_coh=size_pt.coh, size_evt=size_pt.evt, size_cmb=size_pt.cmb,
-                 size_realized=_noncentral_size(eta_real_cr, alpha),
-                 eta_real_cr=eta_real_cr, boot=boot)
+                 eta_directional=directional.eta,
+                 size_directional=_noncentral_size(directional.eta, alpha),
+                 directional_alignment=directional.alignment,
+                 # Deprecated v0.6 aliases retained for code compatibility.
+                 eta_real_cr=directional.eta,
+                 size_realized=_noncentral_size(directional.eta, alpha),
+                 controls=controls, boot=boot)
     return AdequacyReport(:twfe_heterogeneity, design, statistic, eta_cmb, eta_dag,
                           eta_dag / CR.cmb, size_pt.cmb, verdict,
                           Float64(alpha), Float64(delta), notes)
@@ -558,8 +651,8 @@ function _psi_parametric(Dt::Vector{Float64}, uid::Vector{Int}, tid::Vector{Int}
     return nwcr / n_w
 end
 
-"Estimator-driven cross-check: psi from the CR1 sandwich over homoskedastic sigma^2."
-function _psi_driven(Dt::Vector{Float64}, resid::Vector{Float64},
+"Direct CR1 psi from cluster scores over the homoskedastic residual scale."
+function _psi_direct(Dt::Vector{Float64}, resid::Vector{Float64},
                      uid::Vector{Int}, n_w::Float64, sigma2::Float64, G::Int)
     meat = zeros(G)
     for k in eachindex(Dt)
@@ -567,3 +660,5 @@ function _psi_driven(Dt::Vector{Float64}, resid::Vector{Float64},
     end
     return (G / (G - 1)) * sum(abs2, meat) / (n_w * sigma2)
 end
+
+const _psi_driven = _psi_direct

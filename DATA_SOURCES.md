@@ -28,14 +28,22 @@ The remaining files are the exact analysis extracts used by the papers:
 | FE--EIV V-Dem application | `eiv_vdem_panel.csv`, `vdem_gate1.csv` | `vdem` | V-Dem measurement-model output and Maddison Project Database 2020 |
 | FE--EIV repeated-report application | `twins.csv` | `twins` | `RbyExample::twins` 0.0.100; Ashenfelter--Krueger design |
 | Legacy measurement-error example | `psid_wages_panel.csv` | `psid` | Cornwell--Rupert PSID extract distributed by `plm` |
-| Paper C certified design | `castle_panel.csv` | `castle` | Cheng--Hoekstra castle-doctrine replication panel |
-| Paper C flagged design | `divorce_panel.csv` | `divorce` | Stevenson--Wolfers data distributed by `bacondecomp` |
+| TWFE certified design | `castle_panel.csv` | `castle` | Cheng--Hoekstra castle-doctrine replication panel |
+| TWFE flagged design | `divorce_panel.csv` | `divorce` | Stevenson--Wolfers data distributed by `bacondecomp` |
+| TWFE headline design | `minimum_wage_panel.csv` | `minimum_wage` | Callaway--Sant'Anna public minimum-wage replication panel |
 
 Julia keeps the V-Dem gate-1 subset as a separate CSV because it is also a
 published-number fixture; R's `vdem` object contains the columns needed to
 recreate that subset. Dataset help, the papers, and their replication archives
 record variable definitions, transformations, citations, and public-extract
 qualifications.
+
+`minimum_wage_panel.csv` is the four-column analysis extract from the exact
+2,284-county, 2001--2007 panel used by Callaway and Sant'Anna (2021). The source
+replication RDS has SHA-256
+`ba4497c4b41fdc447e89c4421bb35a5ab579246cd92064adc4f21f69fd6f61a7`;
+this shared Julia/R CSV has SHA-256
+`ac5a6e96ed4e9eead62e8c1d6c36c40a96e872b82d143477a31c15b49001a87b`.
 
 `data/twins.csv` is an unmodified export of `RbyExample::twins` version
 0.0.100 (GPL >= 2), whose documentation attributes the study to Ashenfelter

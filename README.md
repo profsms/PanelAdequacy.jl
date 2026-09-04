@@ -29,12 +29,16 @@ report = cycle_report(d.invest, d.capital, d.firm, d.year; controls=d.value, int
 
 - `leverage_report(y, x, unit, time)` is the diffuse-regime diagnostic. It checks treatment concentration and leverage balance and compares df-corrected and HC0-HC3 inference.
 - `cycle_report(y, x, unit, time)` is the concentrated-regime workflow from Paper A. It reports capture, granularity, an exact sign-flip test, and an exact confidence set.
-- `eiv_adequacy(y, x, unit, time; ...)` screens continuous-regressor measurement error under the exact-normal mapping and conservative certificate in *Breakdown Reliability for Saturated Fixed-Effect Inference*.
+- `eiv_adequacy(y, x, unit, time; ...)` screens continuous-regressor measurement error under the exact-normal mapping and certificate in *Breakdown Reliability for Saturated Fixed-Effect Inference*. Supply `reliability_lower` and `gamma_lambda` when the reliability pilot is noisy; otherwise certification is explicitly conditional on treating the computed reliability as known/consistent.
+- `breakdown_reliability(...)` returns the descriptive point threshold, while `certified_breakdown_reliability(...)` adds the coefficient-uncertainty budget in closed form.
 - `reliability_from_repeats(first, second)` estimates within reliability from identically projected repeated measurements; use its equal-variance option only when that added restriction is defensible.
-- `twfe_adequacy(y, unit, time, first_treat)` reports the combined-class
-  worst-case size envelope and a signed directional plug-in. Direct CR1
-  cluster-score normalization is the default; `cluster=:ar1`, `cluster=:iid`,
-  and a positive user-supplied `psi` are sensitivity routes.
+- `twfe_adequacy(y, unit, time, first_treat)` reports the saturated group-time
+  envelope, the cohort/event/additive restricted ladder, and a signed
+  directional plug-in. Its formal decision uses a boundary-robust one-sided
+  confidence bound for the projected group-time norm; trace-debiased point
+  envelopes are descriptive. Direct CR1 cluster-score normalization is the
+  default; `cluster=:ar1`, `cluster=:iid`, and a positive user-supplied `psi`
+  are sensitivity routes.
 
 Default `cycle_report` rendering is concise. Detailed caveats remain available in `report.notes` and as a numbered display through `show_notes(report)`.
 
@@ -58,7 +62,13 @@ On Julia 1.9+, package extensions add these methods for `GLM.jl` linear models a
 - `FLAGGED` marks a concentration or adequacy failure for which conventional inference is not licensed.
 - `INCONCLUSIVE` is returned when the enumeration floor `2^(1-effective_C)` exceeds `alpha`. Its `reason` distinguishes the coding-invariant binary-treatment floor based on `min(n_treated, n_untreated)`, which repacking cannot fix, from a selected packing that may be improved.
 
-Measurement-error reports can additionally return `CERTIFIED` when the formal upper-bound pilot passes.
+Measurement-error reports can additionally return `CERTIFIED` when the supplied reliability lower bound clears the certified breakdown. The report prints `gamma_beta`, `gamma_lambda`, and their total false-certification bound; the legacy keyword `gamma` denotes `gamma_beta`.
+
+TWFE reports use `CERTIFIED` only when the upper endpoint of the projected-norm
+confidence set lies below the exact-normal threshold, `FLAGGED` when its lower
+endpoint lies above the threshold, and `INCONCLUSIVE` when the interval crosses
+it. These labels concern uniform certification over the calibrated class; they
+do not assert that the realized profile is a worst-case direction.
 
 ## Design-Only Use
 
@@ -76,6 +86,6 @@ Please cite the corresponding working paper when a diagnostic is used:
 
 - Halkiewicz, Stanislaw M. S. (2026). *Exact Inference in Fixed-Effect Regressions with Concentrated Identifying Variation*.
 - Halkiewicz, Stanislaw M. S. (2026). *Breakdown Reliability for Saturated Fixed-Effect Inference*.
-- Halkiewicz, Stanislaw M. S. (2026). *Is Bias Correction Enough? A Design Diagnostic for TWFE Inference under Treatment-Effect Heterogeneity*.
+- Halkiewicz, Stanislaw M. S. (2026). *Positive Weights Do Not Certify TWFE Inference*.
 
 See `CITATION.cff` for machine-readable metadata.

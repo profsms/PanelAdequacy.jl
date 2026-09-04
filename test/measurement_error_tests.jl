@@ -22,7 +22,7 @@ end
 
 @testset "Module B — measurement error" begin
 
-    @testset "threshold constants (Paper B, Remark rem-exact-cv)" begin
+    @testset "threshold constants (measurement-error article)" begin
         @test PD._eta_dagger(0.05, 0.05) ≈ 0.652 atol = 5e-4
         @test PD._eta_dagger(0.05, 0.01) ≈ 0.295 atol = 5e-4
         @test PD._eta_quad(0.05, 0.05) ≈ 0.661 atol = 5e-4
@@ -38,6 +38,14 @@ end
         # Current simulation endpoints: Design 4 iid and Design 5 clustered.
         @test PD._noncentral_size(3.58, 0.05) ≈ 0.9474 atol = 5e-5
         @test PD._noncentral_size(3.67, 0.05) ≈ 0.9564 atol = 5e-5
+        eta_dag = PD._eta_dagger(0.05, 0.05)
+        z_beta = PD._norminv(0.95)
+        @test breakdown_reliability(2.0, 1.0, 1.0) ≈
+              2.0 / (2.0 + eta_dag) atol = 1e-12
+        @test certified_breakdown_reliability(2.0, 1.0, 1.0) ≈
+              (2.0 + z_beta) / (2.0 + z_beta + eta_dag) atol = 1e-12
+        @test certified_breakdown_reliability(2.0, 1.0, 1.0) >
+              breakdown_reliability(2.0, 1.0, 1.0)
     end
 
     @testset "reliability helpers" begin
@@ -97,6 +105,17 @@ end
         repc = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd)
         @test repc.verdict === :CERTIFIED
         @test repc.statistic.eta_upper > repc.eta
+        @test repc.statistic.breakdown_certified ≈ 0.8513 atol = 2e-3
+        @test repc.statistic.reliability_lower ≈ repc.statistic.lambda_hat
+        @test repc.statistic.false_certification_bound == 0.05
+        # A noisy reliability pilot must enter through a lower bound and gets
+        # its own error budget; the two errors add without independence.
+        repl = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd,
+                            reliability_lower=0.80, gamma=0.025,
+                            gamma_lambda=0.025)
+        @test repl.verdict === :FLAGGED
+        @test repl.statistic.reliability_lower == 0.80
+        @test repl.statistic.false_certification_bound == 0.05
         # cluster-robust (country CRVE): paper Table 3 psi_hat = 19.2, still certified
         repcr = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd,
                              pilot=:point, cluster=:crve)
@@ -115,7 +134,7 @@ end
         @test rep.implied_size ≈ 0.1435 atol = 1e-3
         @test rep.breakdown ≈ 0.621 atol = 2e-3     # fixed point; paper Table 3
         @test rep.verdict === :FLAGGED
-        # the paper's middle case: flagged iid, CERTIFIED under country clustering
+        # the paper's middle case: flagged iid, point pass under clustering
         repcr = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd,
                              pilot=:point, cluster=:crve)
         @test repcr.statistic.psi_hat ≈ 24.05 rtol = 1e-2
@@ -128,7 +147,7 @@ end
         # the attenuated pilot CERTIFIES this genuinely-failing specification
         repn = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd, pilot=:naive)
         @test repn.eta ≈ 0.8853 * 0.5472 rtol = 1e-2   # eta understated by factor lambda
-        @test repn.verdict === :POINT_PASS              # the exact error Paper B prevents
+        @test repn.verdict === :POINT_PASS              # the exact error the diagnostic prevents
         @test any(occursin("ANTI-CONSERVATIVE", n) for n in repn.notes)
 
         # --- judicial constraints: FLAGGED decisively, exact size 1.00 ---
@@ -238,6 +257,12 @@ end
         @test_throws ArgumentError eiv_adequacy(y, x, uid, tid; sigma_nu=-0.1)
         @test_throws ArgumentError eiv_adequacy(y, x, uid, tid;
                                                 reliability=0.9, cluster=:bogus)
+        @test_throws ArgumentError eiv_adequacy(y, x, uid, tid;
+                                                reliability=0.9,
+                                                reliability_lower=0.0)
+        @test_throws ArgumentError eiv_adequacy(y, x, uid, tid;
+                                                reliability=0.9,
+                                                gamma_lambda=0.96)
 
         # lambda <= 0 (noise swamps signal): hard FLAG with exact size 1
         rephard = eiv_adequacy(y, x, uid, tid; sigma_nu=100.0)
@@ -245,7 +270,7 @@ end
         @test rephard.implied_size == 1.0
         @test any(occursin("exceeds", n) for n in rephard.notes)
 
-        # binary treatment: misclassification is nonclassical — warn (Paper B §5.3)
+        # binary treatment: misclassification is nonclassical — warn
         xb = Float64.([(uid[k] > 5) && (tid[k] >= 3) for k in 1:n0])  # staggered-style dummy
         repb = eiv_adequacy(y, xb, uid, tid; reliability=0.9, pilot=:point)
         @test any(occursin("MISCLASSIFICATION", n) for n in repb.notes)
@@ -264,6 +289,7 @@ end
         @test occursin("Within reliability lambda_hat = 0.898", out)
         @test occursin("Threshold (delta=0.05) = 0.652", out)
         @test occursin("corrected beta0", out)
+        @test occursin("Certified breakdown", out)
         @test occursin("VERDICT:", out)
     end
 

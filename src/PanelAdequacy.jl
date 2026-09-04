@@ -27,7 +27,8 @@ export leverage_report, fe_leverage
 export score_concentration, applicable, adequacy_row
 export eiv_adequacy, reliability_from_interval, reliability_from_ratio,
        reliability_from_repeats,
-       breakdown_reliability, cluster_diagnostics, projection_compatibility,
+       breakdown_reliability, certified_breakdown_reliability,
+       cluster_diagnostics, projection_compatibility,
        tau2_crit, eta_finite_n, eiv_adequacy_summary
 export twfe_design, twfe_adequacy, twfe_gammas
 export cycle_report, cycle_capture, cycle_contrasts, contrast_system,
@@ -126,7 +127,8 @@ function _statistic_lines(pathology::Symbol, s::NamedTuple)
             end
         end
         haskey(s, :eta_upper) &&
-            push!(lines, @sprintf("Conservative |eta| (upper-bound pilot) = %.3f",
+            push!(lines, @sprintf("Certified breakdown = %.3f   reliability lower bound = %.3f   |eta| upper bound = %.3f",
+                                  s.breakdown_certified, s.reliability_lower,
                                   s.eta_upper))
     elseif pathology === :twfe_heterogeneity && haskey(s, :Gamma)
         line = @sprintf("Design statistic Gamma = %.3f", s.Gamma)
@@ -134,25 +136,37 @@ function _statistic_lines(pathology::Symbol, s::NamedTuple)
             (line *= @sprintf("   negative-weight share = %.1f%%", 100 * s.neg_share))
         push!(lines, line)
         haskey(s, :Gamma_cmb) &&
-            push!(lines, @sprintf("  restricted ladder: Gamma_c+e = %.3f | Gamma_evt = %.3f | Gamma_coh = %.3f",
+            push!(lines, @sprintf("  restricted ladder: Gamma_gt = %.3f | Gamma_c+e = %.3f | Gamma_evt = %.3f | Gamma_coh = %.3f",
+                                  haskey(s, :Gamma_gt) ? s.Gamma_gt : s.Gamma,
                                   s.Gamma_cmb, s.Gamma_evt, s.Gamma_coh))
         haskey(s, :Gamma_CR) &&
-            push!(lines, @sprintf("Cluster normalization (%s; psi_hat = %.3f): Gamma_c+e,CR = %.3f | Gamma_CR = %.3f",
+            push!(lines, @sprintf("Cluster normalization (%s; psi_hat = %.3f): Gamma_gt,CR = %.3f | Gamma_c+e,CR = %.3f",
                                   haskey(s, :normalization) ? String(s.normalization) : "legacy",
-                                  s.psi_hat, s.Gamma_cmb_CR, s.Gamma_CR))
+                                  s.psi_hat,
+                                  haskey(s, :Gamma_gt_CR) ? s.Gamma_gt_CR : s.Gamma_CR,
+                                  s.Gamma_cmb_CR))
         haskey(s, :beta) &&
             push!(lines, @sprintf("TWFE beta_hat = %.4g   sigma = %.4g", s.beta, s.sigma))
+        haskey(s, :att_target) && isfinite(s.att_target) &&
+            push!(lines, @sprintf("Target-matched robust ATT = %.4g", s.att_target))
         haskey(s, :pilot_cmb) &&
-            push!(lines, @sprintf("Covariance-corrected pilots c_S/sigma: c+e = %.3g | evt = %.3g | coh = %.3g",
+            push!(lines, @sprintf("Trace-debiased point pilots c_S/sigma: gt = %.3g | c+e = %.3g | evt = %.3g | coh = %.3g",
+                                  haskey(s, :pilot_gt) ? s.pilot_gt : NaN,
                                   s.pilot_cmb, s.pilot_evt, s.pilot_coh))
         if haskey(s, :size_cmb)
-            l = @sprintf("Worst-case size envelope: combined-class = %.1f%% (headline) | cohort %.1f%% | event %.1f%%",
+            l = @sprintf("Point worst-case envelopes: group-time = %.1f%% | c+e = %.1f%% | cohort %.1f%% | event %.1f%%",
+                         100*(haskey(s, :size_gt) ? s.size_gt : s.size_cmb),
                          100*s.size_cmb, 100*s.size_coh, 100*s.size_evt)
             push!(lines, l)
         end
+        if haskey(s, :K_lower_gt) && isfinite(s.K_lower_gt)
+            push!(lines, @sprintf("Boundary-robust group-time K interval (%.1f%%, HC2): [%.3f, %.3f]; HC3 [%.3f, %.3f]",
+                                  100*(1-s.gamma), s.K_lower_gt, s.K_upper_gt,
+                                  s.K_lower_gt_hc3, s.K_upper_gt_hc3))
+        end
         if haskey(s, :boot) && s.boot !== nothing
             b = s.boot
-            push!(lines, @sprintf("  wild envelope (B=%d): median %.1f%%, 95%% [%.1f, %.1f]; psi in [%.2f, %.2f]",
+            push!(lines, @sprintf("  descriptive point-envelope bootstrap (B=%d): median %.1f%%, 95%% [%.1f, %.1f]; psi in [%.2f, %.2f]",
                                   b.n, 100*b.envelope_med, 100*b.envelope_lo,
                                   100*b.envelope_hi, b.psi_lo, b.psi_hi))
         end
@@ -262,7 +276,11 @@ function Base.show(io::IO, ::MIME"text/plain", r::AdequacyReport)
     elseif r.verdict === :POINT_PASS
         @printf(io, "VERDICT: POINT PASS at delta=%.2g (descriptive — not a certificate)", r.delta)
     elseif r.verdict === :FLAGGED
-        @printf(io, "VERDICT: FLAGGED at delta=%.2g", r.delta)
+        if r.pathology === :twfe_heterogeneity
+            @printf(io, "VERDICT: FLAGGED at delta=%.2g (uniform certificate withheld)", r.delta)
+        else
+            @printf(io, "VERDICT: FLAGGED at delta=%.2g", r.delta)
+        end
     else
         print(io, "VERDICT: INCONCLUSIVE")
     end

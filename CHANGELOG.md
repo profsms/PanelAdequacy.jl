@@ -2,20 +2,38 @@
 
 ## 0.7.0 - 2026-09-01
 
-- Align the TWFE module with the current *Is Bias Correction Enough?* theory:
+- Add `certified_breakdown_reliability` and expose the paper's closed-form
+  certified threshold in every measurement-error report.
+- Separate coefficient and reliability uncertainty: `reliability_lower` and
+  `gamma_lambda` implement the lower-bound rule, while the existing `gamma`
+  keyword remains the coefficient budget. Reports now state when certification
+  is conditional on treating a reliability input as known/consistent.
+- Align the TWFE module with the current *Positive Weights Do Not Certify TWFE Inference* theory:
   direct CR1 cluster-score normalization is now the default, while AR(1),
   i.i.d., and user-supplied scales remain explicit sensitivity routes.
-- Separate the combined-class worst-case size envelope from the signed
-  directional plug-in. Reports now label the former as a uniform upper bound,
-  never as realized rejection probability, and expose directional alignment.
+- Add the saturated post-treatment group-time class and verify the balanced-
+  panel identity `Gamma_gt = Gamma`, alongside the cohort, event-time, and
+  additive cohort-plus-event-time ladder.
+- Replace point-envelope certification by a one-sided confidence construction
+  for the projected group-time vector. HC2 projected-norm bounds remain valid
+  at zero heterogeneity; HC3 bounds are reported as a sensitivity check.
+  Trace-debiased quadratic pilots and percentile summaries remain descriptive.
+- Separate every worst-case size envelope from the signed directional plug-in.
+  Reports label envelopes as uniform upper bounds, never as realized rejection
+  probabilities, and expose directional alignment.
 - Replace the dense fixed-effect bootstrap regression with an absorbed,
   cluster-score implementation, making the 2,284-county application practical.
-- Bundle the exact 15,988-row Callaway--Sant'Anna minimum-wage analysis extract
-  and lock its 29.3% envelope, 27.8% directional diagnostic, and sign-reversal
-  calibration.
+- Bundle the exact 15,988-row Callaway--Sant'Anna minimum-wage analysis extract.
+  The reported target is now the equally weighted treated-cell ATT (about
+  -5.2%), matching the theory rather than the differently weighted group
+  aggregate. Its saturated-class point envelope is about 31.6%, and the
+  projected-norm lower bound formally withholds certification.
 - Add never-treated versus not-yet-treated comparison-group selection, direct
   and AR(1) scale outputs, CR1 standard errors, sign-reversal RMS, and a
   fixed-panel-length warning when `T` is large relative to the cluster count.
+- Distinguish Gaussian mean-shift calculations from procedure-specific finite-
+  cluster inference; alternative standard errors or bootstrap tests are not
+  treated as drop-in changes to the Gaussian rejection map.
 - Retain the old realized-size and bootstrap names only as deprecated
   compatibility aliases to the newly explicit directional and envelope fields.
 

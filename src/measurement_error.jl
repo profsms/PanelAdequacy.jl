@@ -1,6 +1,6 @@
 # =============================================================================
-# Module B — measurement-error adequacy
-# SOURCE: paper_b_fe_eiv_JoE_corrected.tex (the JULY 2026 CORRECTED manuscript).
+# Measurement-error adequacy
+# SOURCE: “Breakdown Reliability for Saturated Fixed-Effect Inference”.
 #
 # Core formulas:
 #   within reliability      lambda_hat = 1 - a_hat/tau*2, a_hat = mean(sigma_nu^2)(n - d_K)
@@ -16,6 +16,8 @@
 #                           quadratic closed form as companion — never linear (rem-exact-cv)
 #   breakdown reliability   lambda† = t*/(t* + eta†), t* = |beta*|sqrt(tau*2)/s
 #                           (fixed point; def-breakdown) — pilot-free
+#   certified breakdown     lambda†_gamma = (t* + z_(1-gamma_beta)) /
+#                           (t* + z_(1-gamma_beta) + eta†)
 #   implied size            exact non-central size at eta                    (eq-cv-exact)
 #
 # CLUSTER LAYER — now derived, not asserted (sec-cluster). What changed:
@@ -58,12 +60,11 @@
 # with B ~ beta0 + N(0, psi sigma^2/(lambda^2 tau*2)) — a nondegenerate random
 # multiple of the target, with no concentration under weak information. It is
 # reported as :POINT_PASS, never :CERTIFIED. The formal certificate evaluates
-# eta at U_n = |beta0_corr| + z_{1-gamma} se(beta0_corr) and carries a false-
-# certification probability of at most gamma. The three tolerances
-# (alpha, delta, gamma) are separate error budgets and are reported as a triple,
-# never collapsed (rem-gamma-delta). gamma is restricted to (0, 1/2]: at
-# gamma > 1/2 the quantile z_{1-gamma} turns negative and U_n would DEFLATE the
-# pilot, making the "conservative" verdict weaker than the point verdict.
+# certified breakdown replaces |t| by |t| + z_(1-gamma_beta). With a supplied
+# reliability lower bound of coverage error gamma_lambda, false certification
+# is at most gamma_beta + gamma_lambda, without an independence assumption.
+# The public keyword `gamma` is retained for compatibility and denotes
+# gamma_beta. A noisy reliability point estimate must not be treated as known.
 # =============================================================================
 
 """
@@ -71,7 +72,8 @@
 
 Per-observation measurement-error SDs from published credible-interval bounds
 (V-Dem convention: the interval brackets one posterior SD, so
-`sigma_nu = (codehigh - codelow)/2`; Paper B §sec-app-vdem).
+`sigma_nu = (codehigh - codelow)/2`; lead application in the accompanying
+measurement-error article).
 """
 function reliability_from_interval(codelow::AbstractVector{<:Real},
                                    codehigh::AbstractVector{<:Real})
@@ -301,7 +303,8 @@ end
     breakdown_reliability(beta_star, sigma, tau_star2;
                           alpha=0.05, delta=0.05, psi=1.0) -> Float64
 
-Self-consistent breakdown reliability (Paper B Def. def-breakdown): the fixed
+Self-consistent breakdown reliability (Definition def-breakdown in the
+accompanying measurement-error article): the fixed
 point lambda = lambda†(lambda) when the corrected pilot `beta*/lambda` is
 evaluated at the reliability being solved for. Closed form
 `lambda† = t*/(t* + eta†)` with `t* = |beta*| sqrt(tau*2)/sigma` — the
@@ -322,11 +325,42 @@ function breakdown_reliability(beta_star::Real, sigma::Real, tau_star2::Real;
 end
 
 """
+    certified_breakdown_reliability(beta_star, sigma, tau_star2;
+                                    alpha=0.05, delta=0.05,
+                                    gamma_beta=0.05, psi=1.0) -> Float64
+
+Certified breakdown reliability from the reported t-statistic. It replaces
+`|t|` by `|t| + z_(1-gamma_beta)` in [`breakdown_reliability`](@ref):
+`lambda†_gamma = (|t| + z)/( |t| + z + eta†)`. Compare this requirement with a
+known/consistent within reliability or with a lower confidence bound. If the
+lower bound has coverage error `gamma_lambda`, the total false-certification
+bound is `gamma_beta + gamma_lambda`; that second budget is attached to the
+bound, not to this threshold formula.
+"""
+function certified_breakdown_reliability(beta_star::Real, sigma::Real,
+                                         tau_star2::Real;
+                                         alpha::Real=0.05,
+                                         delta::Real=0.05,
+                                         gamma_beta::Real=0.05,
+                                         psi::Real=1.0)
+    sigma > 0 || throw(ArgumentError("sigma must be positive"))
+    tau_star2 > 0 || throw(ArgumentError("tau_star2 must be positive"))
+    psi > 0 || throw(ArgumentError("psi must be positive"))
+    (isfinite(gamma_beta) && 0 < gamma_beta <= 0.5) ||
+        throw(ArgumentError("gamma_beta must be in (0, 0.5]"))
+    eta_dag = _eta_dagger(alpha, delta)
+    t_reported = abs(beta_star) * sqrt(tau_star2) / (sigma * sqrt(psi))
+    tz = t_reported + _norminv(1 - gamma_beta)
+    return tz / (tz + eta_dag)
+end
+
+"""
     eiv_adequacy(y, x, unit, time; <noise input>, alpha=0.05, delta=0.05,
-                 gamma=0.05, pilot=:conservative,
+                 gamma=0.05, gamma_lambda=0.0,
+                 reliability_lower=nothing, pilot=:conservative,
                  cluster=:iid, psi=nothing) -> AdequacyReport
 
-Module B diagnostic (Paper B). Reproduces the user's FE regression of `y` on
+Measurement-error diagnostic. Reproduces the user's FE regression of `y` on
 the observed regressor `x` via Frisch-Waugh, then certifies whether naive
 inference is size-controlled under classical measurement error.
 
@@ -336,13 +370,20 @@ Noise input — exactly one of:
 - `reliability`  : the within reliability lambda_hat directly (external estimate
                    of the WITHIN-transformed regressor's reliability)
 
+For a formal certificate, `reliability_lower` may supply a lower confidence
+bound for within reliability and `gamma_lambda` its coverage error. If omitted,
+the computed `lambda_hat` is treated as known/consistent (`gamma_lambda=0`), so
+the guarantee is conditional on that treatment. The backward-compatible
+keyword `gamma` is the paper's coefficient budget `gamma_beta`.
+
 `pilot` (correct-by-default honesty machinery, spec §4):
-- `:conservative` (default) — formal certificate: verdict evaluated at the upper
-  `1-gamma` confidence bound of the corrected pilot (protocol step 6)
+- `:conservative` (default) — formal certificate: compare the reliability lower
+  bound with the certified breakdown obtained by replacing `|t|` with
+  `|t| + z_(1-gamma)` (protocol step 6)
 - `:point` — corrected point pilot; descriptive verdict (protocol step 4)
 - `:naive` — attenuated `beta*` pilot; ANTI-CONSERVATIVE, for comparison only
 
-`cluster` (Paper B, Remark rem-cluster — the standardization of the t-test):
+`cluster` (cluster-robust extension in the accompanying article):
 - `:iid` (default) — homoskedastic-i.i.d. standard errors (Theorem thm-noncentral)
 - `:crve` — by-unit cluster-robust (Arellano CR1) variance-inflation `psi_hat`;
   `|eta|` and the breakdown are deflated by `sqrt(psi_hat)`
@@ -350,7 +391,7 @@ Noise input — exactly one of:
 - or pass `psi = <value>` to supply your own variance-inflation factor
 
 The breakdown reliability is the fixed point `lambda† = t*/(t* + eta†)` with
-`t* = |beta*| sqrt(tau*2)/sigma` (Paper B Def. def-breakdown): pilot-free, and
+`t* = |beta*| sqrt(tau*2)/sigma` (Definition def-breakdown): pilot-free, and
 for the point pilot `lambda_hat >= lambda†` is exactly the verdict criterion.
 
     eiv_adequacy(; beta_star, sigma, tau_star2, n, d_K,
@@ -367,6 +408,8 @@ function eiv_adequacy(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
                       codehigh::Union{Nothing,AbstractVector{<:Real}}=nothing,
                       reliability::Union{Nothing,Real}=nothing,
                       alpha::Real=0.05, delta::Real=0.05, gamma::Real=0.05,
+                      reliability_lower::Union{Nothing,Real}=nothing,
+                      gamma_lambda::Real=0.0,
                       pilot::Symbol=:conservative,
                       cluster::Symbol=:iid, psi::Union{Nothing,Real}=nothing)
     cluster in (:iid, :crve, :ar1) ||
@@ -420,7 +463,7 @@ function eiv_adequacy(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
 
     extra = String[]
     length(unique(x)) <= 2 && push!(extra,
-        "binary treatment detected: errors in binary treatments are MISCLASSIFICATION (nonclassical); this classical-EIV threshold does not apply (Paper B §5.3)")
+        "binary treatment detected: errors in binary treatments are MISCLASSIFICATION (nonclassical); this classical-EIV threshold does not apply (scope section of the measurement-error article)")
 
     # cluster variance-inflation factor psi_hat (sec-cluster)
     rho_ar1 = nothing
@@ -454,7 +497,7 @@ function eiv_adequacy(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
                                   isempty(cdiag.nested) ? "none" : join(cdiag.nested, ", ")))
         end
         if isfinite(cdiag.projection_ratio)
-            push!(extra, @sprintf("direct projection-compatibility diagnostic chi_proj = %.5f = sum_g ||M a^(g)-a^(g)||^2/tau*2 (Paper B protocol). This finite-panel number evaluates the named sample quantity but does not itself prove the asymptotic sequence condition.",
+            push!(extra, @sprintf("direct projection-compatibility diagnostic chi_proj = %.5f = sum_g ||M a^(g)-a^(g)||^2/tau*2 (measurement-error protocol). This finite-panel number evaluates the named sample quantity but does not itself prove the asymptotic sequence condition.",
                                   cdiag.projection_ratio))
         else
             push!(extra, @sprintf("direct projection-compatibility diagnostic skipped because n*G = %.0f exceeds its allocation guard; call projection_compatibility(...; max_cells=...) deliberately to compute it.",
@@ -474,9 +517,11 @@ function eiv_adequacy(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
 
     design = _design_summary_codes(uid, tid, N, T; xt=xt)
     return _eiv_core(design, beta_star, sigma, tau_star2, lambda;
-                     alpha=alpha, delta=delta, gamma=gamma, pilot=pilot,
-                     psi_hat=psi_hat, rho_ar1=rho_ar1, cluster_diag=cdiag,
-                     extra_notes=extra)
+                      alpha=alpha, delta=delta, gamma=gamma, pilot=pilot,
+                      reliability_lower=reliability_lower,
+                      gamma_lambda=gamma_lambda,
+                      psi_hat=psi_hat, rho_ar1=rho_ar1, cluster_diag=cdiag,
+                      extra_notes=extra)
 end
 
 function eiv_adequacy(; beta_star::Real, sigma::Real, tau_star2::Real,
@@ -485,6 +530,8 @@ function eiv_adequacy(; beta_star::Real, sigma::Real, tau_star2::Real,
                       sigma_nu2::Union{Nothing,Real}=nothing,
                       N::Integer=0, T::Integer=0,
                       alpha::Real=0.05, delta::Real=0.05, gamma::Real=0.05,
+                      reliability_lower::Union{Nothing,Real}=nothing,
+                      gamma_lambda::Real=0.0,
                       pilot::Symbol=:conservative,
                       psi::Union{Nothing,Real}=nothing)
     (reliability !== nothing) + (sigma_nu2 !== nothing) == 1 ||
@@ -503,10 +550,12 @@ function eiv_adequacy(; beta_star::Real, sigma::Real, tau_star2::Real,
     end
     design = DesignSummary(n, N, T, d_K, d_K / n, 1, Float64(tau_star2))
     return _eiv_core(design, Float64(beta_star), Float64(sigma),
-                     Float64(tau_star2), lambda; alpha=alpha, delta=delta,
-                     gamma=gamma, pilot=pilot,
-                     psi_hat=(psi === nothing ? 1.0 : Float64(psi)),
-                     extra_notes=String[])
+                      Float64(tau_star2), lambda; alpha=alpha, delta=delta,
+                      gamma=gamma, pilot=pilot,
+                      reliability_lower=reliability_lower,
+                      gamma_lambda=gamma_lambda,
+                      psi_hat=(psi === nothing ? 1.0 : Float64(psi)),
+                      extra_notes=String[])
 end
 
 """
@@ -524,18 +573,24 @@ function eiv_adequacy_summary(beta_star::Real, sigma::Real, tau_star2::Real,
                               N::Integer=0, T::Integer=0,
                               alpha::Real=0.05, delta::Real=0.05,
                               gamma::Real=0.05,
+                              reliability_lower::Union{Nothing,Real}=nothing,
+                              gamma_lambda::Real=0.0,
                               pilot::Symbol=:conservative,
                               psi::Union{Nothing,Real}=nothing)
     return eiv_adequacy(; beta_star=beta_star, sigma=sigma,
                         tau_star2=tau_star2, n=n, d_K=d_K,
                         reliability=reliability, sigma_nu2=sigma_nu2,
                         N=N, T=T, alpha=alpha, delta=delta, gamma=gamma,
+                        reliability_lower=reliability_lower,
+                        gamma_lambda=gamma_lambda,
                         pilot=pilot, psi=psi)
 end
 
 function _eiv_core(design::DesignSummary, beta_star::Float64, sigma::Float64,
                    tau_star2::Float64, lambda::Float64;
                    alpha::Real, delta::Real, gamma::Real, pilot::Symbol,
+                   reliability_lower::Union{Nothing,Real}=nothing,
+                   gamma_lambda::Real=0.0,
                    psi_hat::Float64=1.0, rho_ar1::Union{Nothing,Float64}=nothing,
                    cluster_diag=nothing, extra_notes::Vector{String})
     pilot in (:conservative, :point, :naive) ||
@@ -547,7 +602,8 @@ function _eiv_core(design::DesignSummary, beta_star::Float64, sigma::Float64,
     tau_star2 > 0 || throw(ArgumentError("tau_star2 must be positive"))
     lambda <= 1 || throw(ArgumentError("reliability cannot exceed one"))
     psi_hat > 0 || throw(ArgumentError("psi must be positive"))
-    # gamma must leave z_{1-gamma} >= 0 (Paper B, prop-certificate). At
+    # gamma is the coefficient budget gamma_beta and must leave
+    # z_(1-gamma) >= 0. At
     # gamma > 1/2 the "upper" bound U_n = |beta0_corr| + z_{1-gamma} se would
     # DEFLATE the pilot, making the conservative verdict weaker than the point
     # verdict while still being labelled :CERTIFIED.
@@ -555,15 +611,23 @@ function _eiv_core(design::DesignSummary, beta_star::Float64, sigma::Float64,
         "gamma must be in (0, 0.5]: at gamma > 0.5 the certificate's upper " *
         "confidence bound deflates rather than inflates the pilot and the " *
         "verdict is no longer conservative"))
+    (isfinite(gamma_lambda) && 0 <= gamma_lambda < 1) ||
+        throw(ArgumentError("gamma_lambda must be in [0, 1)"))
+    gamma + gamma_lambda < 1 ||
+        throw(ArgumentError("gamma + gamma_lambda must be less than one"))
     eta_dag = _eta_dagger(alpha, delta)
     sqpsi = sqrt(psi_hat)
     notes = copy(extra_notes)
 
     # fixed-point breakdown lambda† = t*/(t* + eta†), t* = |beta*|sqrt(tau*2)/sigma
-    # (Paper B Def. def-breakdown) — the pilot-free, self-consistent evaluation;
+    # (Definition def-breakdown) — the pilot-free, self-consistent evaluation;
     # under clustering t* is rescaled by 1/sqrt(psi)
     t_star = abs(beta_star) * sqrt(tau_star2) / sigma
-    breakdown = (t_star / sqpsi) / (t_star / sqpsi + eta_dag)
+    t_reported = t_star / sqpsi
+    breakdown = t_reported / (t_reported + eta_dag)
+    z_beta = _norminv(1 - gamma)
+    certified_breakdown = (t_reported + z_beta) /
+                          (t_reported + z_beta + eta_dag)
 
     if lambda <= 0
         push!(notes, @sprintf("implied noise exceeds ALL residual within variation (lambda_hat = %.3f <= 0): the noise pilot may be misscaled, or attenuation is total; exact size = 1", lambda))
@@ -573,6 +637,10 @@ function _eiv_core(design::DesignSummary, beta_star::Float64, sigma::Float64,
                               eta_dag, breakdown, 1.0, :FLAGGED, Float64(alpha),
                               Float64(delta), notes)
     end
+
+    ell = reliability_lower === nothing ? lambda : Float64(reliability_lower)
+    (isfinite(ell) && 0 < ell <= 1) ||
+        throw(ArgumentError("reliability_lower must be in (0, 1]"))
 
     # The cluster-robust scale (cor-cluster-feasible): s_CR^2 = sigma_CJN^2 * psi
     # = V^sc_CR/tau*2, an algebraic identity. EVERY scale below is s_CR — the
@@ -587,21 +655,25 @@ function _eiv_core(design::DesignSummary, beta_star::Float64, sigma::Float64,
     b_pilot = pilot === :naive ? abs(beta_star) : abs(beta_corr)
     eta_point = (b_pilot / s_CR) * (1 - lambda) * sqrt(tau_star2)
     eta_upper = pilot === :conservative ?
-        ((abs(beta_corr) + _norminv(1 - gamma) * se_corr) / s_CR) *
-        (1 - lambda) * sqrt(tau_star2) : nothing
+        (t_reported + z_beta) * (1 - ell) / ell : nothing
     eta_used = pilot === :conservative ? eta_upper : eta_point
 
     # rem-plugin: only the certificate is size-controlled. The point plug-in is
     # a descriptive statistic — a nondegenerate random multiple of the target —
     # so a passing point verdict is a POINT PASS, not a certificate.
-    passes = eta_used <= eta_dag
+    passes = pilot === :conservative ? ell >= certified_breakdown :
+                                      eta_used <= eta_dag
     verdict = passes ? (pilot === :conservative ? :CERTIFIED : :POINT_PASS) :
                        :FLAGGED
     implied_size = _noncentral_size(eta_point, alpha)
 
     if pilot === :conservative
-        push!(notes, @sprintf("formal certificate (prop-certificate): the verdict uses U_n = |beta0_corr| + z_{1-gamma} se(beta0_corr), giving |eta|_ub = %.3f, and carries a false-certification probability of at most gamma = %.2g. Tolerances are the TRIPLE (alpha, delta, gamma) = (%.2g, %.2g, %.2g) and do not collapse to one number (rem-gamma-delta): delta bounds the size distortion being certified, gamma bounds the probability the certification statement is wrong. The implied size shown is at the point pilot.",
-                              eta_upper, gamma, alpha, delta, gamma))
+        push!(notes, @sprintf("formal certificate (prop-certificate): certified breakdown lambda_dagger_gamma = %.3f is obtained by replacing |t| with |t| + z_(1-gamma_beta); the comparison uses reliability lower bound ell = %.3f. False certification is at most gamma_beta + gamma_lambda = %.3g + %.3g = %.3g, without requiring independence. The implied size shown is at the point pilot.",
+                              certified_breakdown, ell, gamma, gamma_lambda,
+                              gamma + gamma_lambda))
+        if reliability_lower === nothing
+            push!(notes, "CONDITIONAL RELIABILITY TREATMENT: no reliability_lower was supplied, so lambda_hat is treated as known/consistent and gamma_lambda = 0. A noisy finite-sample reliability estimate requires a lower confidence bound and its coverage-error budget.")
+        end
     elseif pilot === :point
         push!(notes, "POINT PASS, not a certificate (rem-plugin): the corrected pilot at its point estimate is descriptive. Under weak information eta_hat converges to a nondegenerate random multiple (|B|/|beta0|)|eta| of the target, with median close to it but no concentration — its sampling variability is a first-order feature of the regime, not a vanishing approximation error. For a size-controlled statement use pilot=:conservative.")
     else
@@ -625,10 +697,15 @@ function _eiv_core(design::DesignSummary, beta_star::Float64, sigma::Float64,
     end
 
     statistic_base = (lambda_hat=lambda, noise_ratio=(1 - lambda) / lambda,
+                      reliability_lower=ell,
                       beta_star=beta_star, beta_corr=beta_corr,
                       se_beta_corr=se_corr, sigma=sigma, s_CR=s_CR,
                       t_star=t_star, t_CR=t_star / sqpsi, psi_hat=psi_hat,
-                      gamma=Float64(gamma), pilot=pilot,
+                      breakdown_certified=certified_breakdown,
+                      gamma=Float64(gamma), gamma_beta=Float64(gamma),
+                      gamma_lambda=Float64(gamma_lambda),
+                      false_certification_bound=Float64(gamma + gamma_lambda),
+                      pilot=pilot,
                       eta_quad_threshold=_eta_quad(alpha, delta))
     rho_ar1 !== nothing &&
         (statistic_base = merge(statistic_base, (rho_ar1=rho_ar1,)))

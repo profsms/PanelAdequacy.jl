@@ -88,13 +88,13 @@ end
         @test rep.design.n == 8930
         @test rep.design.d_K == 221
         st = rep.statistic
-        @test st.lambda_hat ≈ 0.8984 atol = 1e-3
+        @test st.lambda_hat ≈ 0.8937 atol = 1e-3
         @test st.beta_star ≈ 0.06096 rtol = 2e-3
-        @test st.beta_corr ≈ 0.06785 rtol = 2e-3
+        @test st.beta_corr ≈ 0.06821 rtol = 2e-3
         @test st.sigma ≈ 0.32956 rtol = 2e-3
         @test rep.design.tau_star2 ≈ 127.826 rtol = 2e-3
-        @test rep.eta ≈ 0.23640 rtol = 5e-3
-        @test rep.implied_size ≈ 0.05643 atol = 5e-4
+        @test rep.eta ≈ 0.24884 rtol = 5e-3
+        @test rep.implied_size ≈ 0.05712 atol = 5e-4
         @test rep.threshold ≈ 0.652 atol = 5e-4
         @test rep.breakdown ≈ 0.762 atol = 2e-3     # fixed point t*/(t*+eta†); paper Table 3
         # point verdict is exactly equivalent to lambda_hat >= breakdown
@@ -129,16 +129,16 @@ end
         s = vdem_spec(cols, :v2xlg_legcon, :v2xlg_legcon_sd)
         rep = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd, pilot=:point)
         @test rep.design.n == 8529
-        @test rep.statistic.lambda_hat ≈ 0.5472 atol = 1e-3
-        @test rep.eta ≈ 0.8853 rtol = 5e-3
-        @test rep.implied_size ≈ 0.1435 atol = 1e-3
+        @test rep.statistic.lambda_hat ≈ 0.4985 atol = 1e-3
+        @test rep.eta ≈ 1.0763 rtol = 5e-3
+        @test rep.implied_size ≈ 0.1896 atol = 1e-3
         @test rep.breakdown ≈ 0.621 atol = 2e-3     # fixed point; paper Table 3
         @test rep.verdict === :FLAGGED
         # the paper's middle case: flagged iid, point pass under clustering
         repcr = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd,
                              pilot=:point, cluster=:crve)
         @test repcr.statistic.psi_hat ≈ 24.05 rtol = 1e-2
-        @test repcr.implied_size ≈ 0.054 atol = 1e-3
+        @test repcr.implied_size ≈ 0.0555 atol = 1e-3
         @test repcr.verdict === :POINT_PASS
         @test (repcr.statistic.lambda_hat >= repcr.breakdown) ==
               (repcr.verdict === :POINT_PASS)
@@ -146,7 +146,7 @@ end
         # THE naive-pilot danger (Prop. prop-pilot(i) / Design 3a, on real data):
         # the attenuated pilot CERTIFIES this genuinely-failing specification
         repn = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd, pilot=:naive)
-        @test repn.eta ≈ 0.8853 * 0.5472 rtol = 1e-2   # eta understated by factor lambda
+        @test repn.eta ≈ 1.0763 * 0.4985 rtol = 1e-2   # eta understated by factor lambda
         @test repn.verdict === :POINT_PASS              # the exact error the diagnostic prevents
         @test any(occursin("ANTI-CONSERVATIVE", n) for n in repn.notes)
 
@@ -154,18 +154,18 @@ end
         s = vdem_spec(cols, :v2x_jucon, :v2x_jucon_sd)
         rep = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd, pilot=:point)
         @test rep.design.n == 8889
-        @test rep.statistic.lambda_hat ≈ 0.4125 atol = 1e-3
-        @test rep.eta ≈ 12.10 rtol = 1e-2
+        @test rep.statistic.lambda_hat ≈ 0.3788 atol = 1e-3
+        @test rep.eta ≈ 13.93 rtol = 1e-2
         @test rep.implied_size ≈ 1.0 atol = 1e-6
         @test rep.breakdown ≈ 0.929 atol = 2e-3     # fixed point; paper Table 3
         @test rep.verdict === :FLAGGED
         @test any(occursin("quadratic", n) for n in rep.notes)   # far-out honesty note
-        # flag SURVIVES clustering: psi_hat = 25.2 but eta_CR = 2.4, size 67%
+        # flag SURVIVES clustering: psi_hat = 25.2 but eta_CR = 2.77, size 79%
         repcr = eiv_adequacy(s.y, s.x, s.unit, s.time; sigma_nu=s.sd,
                              pilot=:point, cluster=:crve)
         @test repcr.statistic.psi_hat ≈ 25.21 rtol = 1e-2
-        @test repcr.eta ≈ 2.41 rtol = 1e-2
-        @test repcr.implied_size ≈ 0.674 atol = 3e-3
+        @test repcr.eta ≈ 2.774 rtol = 1e-2
+        @test repcr.implied_size ≈ 0.792 atol = 3e-3
         @test repcr.verdict === :FLAGGED
     end
 
@@ -239,6 +239,54 @@ end
         out = sprint(show, MIME("text/plain"), rcov)
         @test occursin("n=147", out) && occursin("d_K=4", out)
         @test !occursin("N=0", out)
+    end
+
+    @testset "controls enter regression df and exact noise trace" begin
+        N, T = 6, 4
+        unit = repeat(1:N, inner=T)
+        time = repeat(1:T, outer=N)
+        n = length(unit)
+        k = collect(1:n)
+        z = sin.(0.37 .* k) .+ 0.05 .* unit
+        x = cos.(0.61 .* k) .+ 0.4 .* z .+ 0.1 .* unit
+        y = 1.2 .* x .- 0.7 .* z .+ sin.(1.13 .* k)
+        sd = 0.03 .+ 0.002 .* k
+
+        # Dense reference nuisance projection: intercept, N-1 unit dummies,
+        # T-1 time dummies, and the supplied control.
+        K = ones(n, 1 + (N - 1) + (T - 1) + 1)
+        col = 2
+        for j in 2:N
+            K[:, col] .= unit .== j
+            col += 1
+        end
+        for j in 2:T
+            K[:, col] .= time .== j
+            col += 1
+        end
+        K[:, col] .= z
+        Q = Matrix(qr(K).Q)[:, 1:size(K, 2)]
+        M = I - Q * Q'
+        xt = M * x
+        yt = M * y
+        tau2 = dot(xt, xt)
+        beta = dot(xt, yt) / tau2
+        dof = n - size(K, 2) - 1
+        sigma = sqrt(sum(abs2, yt .- beta .* xt) / dof)
+        hK = vec(sum(abs2, Q; dims=2))
+        lambda = 1 - dot(1 .- hK, abs2.(sd)) / tau2
+
+        rep = eiv_adequacy(y, x, unit, time;
+                           controls=z, sigma_nu=sd, pilot=:point)
+        @test rep.statistic.beta_star ≈ beta atol=1e-11
+        @test rep.statistic.sigma ≈ sigma atol=1e-11
+        @test rep.statistic.lambda_hat ≈ lambda atol=1e-11
+
+        s = 0.04
+        reps = eiv_adequacy(y, x, unit, time;
+                            controls=z, sigma_nu=s, pilot=:point)
+        lambda_s = 1 - s^2 * (n - size(K, 2)) / tau2
+        @test reps.statistic.lambda_hat ≈ lambda_s atol=1e-11
     end
 
     @testset "input validation and edge cases" begin

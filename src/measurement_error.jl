@@ -3,7 +3,9 @@
 # SOURCE: “Breakdown Reliability for Saturated Fixed-Effect Inference”.
 #
 # Core formulas:
-#   within reliability      lambda_hat = 1 - a_hat/tau*2, a_hat = mean(sigma_nu^2)(n - d_K)
+#   within reliability      lambda_hat = 1 - a_hat/tau*2
+#                           scalar sigma_nu: a_hat = sigma_nu^2(n-d_K)
+#                           vector sigma_nu: a_hat = sum_i(1-h_ii)sigma_nu_i^2
 #   feasible non-centrality |eta| = (|beta0|/s)(1 - lambda) sqrt(tau*2)     (cor-feasible)
 #   corrected pilot         beta0_corr = beta*/lambda_hat                   (prop-pilot)
 #   pilot sampling se       se(beta0_corr) = s_CR / (lambda sqrt(tau*2))    (rem-plugin)
@@ -70,10 +72,10 @@
 """
     reliability_from_interval(codelow, codehigh) -> Vector{Float64}
 
-Per-observation measurement-error SDs from published credible-interval bounds
-(V-Dem convention: the interval brackets one posterior SD, so
-`sigma_nu = (codehigh - codelow)/2`; lead application in the accompanying
-measurement-error article).
+Per-observation measurement-error SDs from published interval bounds, computed
+as `sigma_nu = (codehigh - codelow)/2`. This helper is appropriate only when
+the interval half-width is substantively calibrated as one measurement-error
+SD; it must not be applied mechanically to highest-posterior-density bounds.
 """
 function reliability_from_interval(codelow::AbstractVector{<:Real},
                                    codehigh::AbstractVector{<:Real})
@@ -240,15 +242,17 @@ end
 
 """
     projection_compatibility(xt, cluster, unit, time;
-                             tau_star2=sum(abs2, xt), tol=1e-10,
-                             maxit=10_000, max_cells=5_000_000) -> NamedTuple
+                             tau_star2=sum(abs2, xt), controls=nothing,
+                             tol=1e-10, maxit=10_000,
+                             max_cells=5_000_000) -> NamedTuple
 
 Projection compatibility (Assumption ass-cluster(iv)), evaluated directly:
 
     sum_g ||M a^(g) - a^(g)||^2 / tau*2
 
 for a two-way (unit and time) fixed-effect design, where `a^(g)` is the
-residualized regressor restricted to cluster `g`.
+residualized regressor restricted to cluster `g`. If `controls` are supplied,
+`M` also removes their within-FE column space.
 
 Unlike the `ratio_ne` shortcut of [`cluster_diagnostics`](@ref), this needs
 neither of the balance conditions (N1) and (N2) of lem-nest(b): it is the
@@ -270,6 +274,7 @@ function projection_compatibility(xt::AbstractVector{<:Real},
                                   cluster::AbstractVector,
                                   unit::AbstractVector, time::AbstractVector;
                                   tau_star2::Real=sum(abs2, xt),
+                                  controls=nothing,
                                   tol::Real=1e-10, maxit::Integer=10_000,
                                   max_cells::Real=5_000_000)
     n = length(xt)
@@ -284,6 +289,8 @@ function projection_compatibility(xt::AbstractVector{<:Real},
 
     uid, tid, N, T = _integer_codes(unit, time)
     x = Float64.(xt)
+    partial = _partial_within_codes(x, uid, tid, N, T; controls=controls)
+    Q = partial.Q
     total = 0.0
     a = zeros(Float64, n)
     for g in 1:G
@@ -292,6 +299,7 @@ function projection_compatibility(xt::AbstractVector{<:Real},
             cid[k] == g && (a[k] = x[k])
         end
         Ma = _twoway_demean(copy(a), uid, tid, N, T; tol=tol, maxit=maxit)
+        size(Q, 2) > 0 && (Ma .-= Q * (Q' * Ma))
         @inbounds for k in 1:n
             total += abs2(Ma[k] - a[k])
         end
@@ -355,18 +363,22 @@ function certified_breakdown_reliability(beta_star::Real, sigma::Real,
 end
 
 """
-    eiv_adequacy(y, x, unit, time; <noise input>, alpha=0.05, delta=0.05,
+    eiv_adequacy(y, x, unit, time; <noise input>, controls=nothing,
+                 alpha=0.05, delta=0.05,
                  gamma=0.05, gamma_lambda=0.0,
                  reliability_lower=nothing, pilot=:conservative,
                  cluster=:iid, psi=nothing) -> AdequacyReport
 
 Measurement-error diagnostic. Reproduces the user's FE regression of `y` on
 the observed regressor `x` via Frisch-Waugh, then certifies whether naive
-inference is size-controlled under classical measurement error.
+inference is size-controlled under classical measurement error. Optional
+numeric `controls` are partialled from the outcome and target regressor; their
+within-FE leverage is included in the scalar or observation-specific noise
+trace.
 
 Noise input — exactly one of:
 - `sigma_nu`     : per-observation (or scalar) measurement-error SD
-- `codelow`, `codehigh` : V-Dem-style posterior interval bounds
+- `codelow`, `codehigh` : interval bounds whose half-width is calibrated as one error SD
 - `reliability`  : the within reliability lambda_hat directly (external estimate
                    of the WITHIN-transformed regressor's reliability)
 
@@ -407,6 +419,7 @@ function eiv_adequacy(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
                       codelow::Union{Nothing,AbstractVector{<:Real}}=nothing,
                       codehigh::Union{Nothing,AbstractVector{<:Real}}=nothing,
                       reliability::Union{Nothing,Real}=nothing,
+                      controls=nothing,
                       alpha::Real=0.05, delta::Real=0.05, gamma::Real=0.05,
                       reliability_lower::Union{Nothing,Real}=nothing,
                       gamma_lambda::Real=0.0,
@@ -419,11 +432,12 @@ function eiv_adequacy(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
     (length(y) == n && length(x) == n) ||
         throw(ArgumentError("y, x, unit, time must have equal length"))
     d_K, ncomp = fe_dimension(uid, tid, N, T)
-    dof = n - d_K - 1
+    partial = _partial_within_codes(x, uid, tid, N, T; controls=controls)
+    dof = n - d_K - partial.rank - 1
     dof > 0 || throw(ArgumentError("no residual degrees of freedom"))
 
-    xt = _twoway_demean(Float64.(x), uid, tid, N, T)
-    yt = _twoway_demean(Float64.(y), uid, tid, N, T)
+    xt = partial.xt
+    yt = _partial_outcome_codes(y, uid, tid, N, T, partial.Q)
     tau_star2 = sum(abs2, xt)
     tau_star2 > 1e-12 * max(sum(abs2, Float64.(x)), 1.0) ||
         throw(ArgumentError("regressor has no within variation"))
@@ -450,14 +464,18 @@ function eiv_adequacy(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
         if sigma_nu isa Real
             sigma_nu >= 0 || throw(ArgumentError("sigma_nu must be non-negative"))
             s2 = abs2(Float64(sigma_nu))
+            a_hat = s2 * (n - d_K - partial.rank)
         else
             length(sigma_nu) == n || throw(ArgumentError(
                 "sigma_nu must be scalar or have length n = $n"))
             all(sigma_nu .>= 0) || throw(ArgumentError(
                 "sigma_nu values must be non-negative"))
-            s2 = mean(abs2, Float64.(sigma_nu))
+            p_nuisance = _fe_leverage_diag(uid, tid, N, T)
+            if size(partial.Q, 2) > 0
+                p_nuisance .+= vec(sum(abs2, partial.Q; dims=2))
+            end
+            a_hat = dot(1 .- p_nuisance, abs2.(Float64.(sigma_nu)))
         end
-        a_hat = s2 * (n - d_K)
         lambda = 1 - a_hat / tau_star2
     end
 
@@ -488,7 +506,8 @@ function eiv_adequacy(y::AbstractVector{<:Real}, x::AbstractVector{<:Real},
         cdiag = cluster_diagnostics(xt, uid, [(:unit, uid), (:time, tid)];
                                     tau_star2=tau_star2)
         pcomp = projection_compatibility(xt, uid, unit, time;
-                                         tau_star2=tau_star2)
+                                         tau_star2=tau_star2,
+                                         controls=controls)
         cdiag = merge(cdiag, (projection_ratio=pcomp.ratio,
                               projection_cells=pcomp.cells))
         if cdiag.ratio_ne > 0.20

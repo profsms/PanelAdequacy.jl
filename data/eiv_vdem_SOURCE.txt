@@ -1,0 +1,5 @@
+V-Dem posterior means and posterior standard deviations
+Source: https://github.com/vdeminstitute/vdemdata/raw/f4dd26922e658442524dfd954bf14f7ebe622d5d/data/vdem.RData
+SHA-256: 39b412d39a061c18f20c98e4ad4d6355b05a0441df31be4ee9aec420dc3d95ea
+Analysis window: 1960--2018; merged to Maddison Project Database 2020.
+The *_sd fields are V-Dem's posterior standard deviations, not half-widths of its HPD intervals.

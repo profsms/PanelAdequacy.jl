@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.1 - 2026-09-05
+
+- Use the exact leverage-weighted noise trace
+  `sum((1 - h_ii) * sigma_nu_i^2)` when observation-specific measurement-error
+  standard deviations are supplied. Both this trace and the common-SD formula
+  now use the full nuisance projection (fixed effects plus supplied controls).
+- Add nuisance-control support to `eiv_adequacy`, including correct residual
+  degrees of freedom and control-aware projection-compatibility diagnostics.
+- Replace the bundled V-Dem interval-half-width proxy with V-Dem's direct
+  posterior-standard-deviation fields and refresh the article reproduction
+  locks. Clarify that `reliability_from_interval` is valid only when an interval
+  half-width is substantively calibrated as one error standard deviation.
+
 ## 0.7.0 - 2026-09-01
 
 - Add `certified_breakdown_reliability` and expose the paper's closed-form

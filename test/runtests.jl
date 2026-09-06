@@ -67,7 +67,7 @@ include("published_tests.jl")
     rep = eiv_adequacy(Float64.(d.ly[keep]), Float64.(d.v2x_polyarchy[keep]),
                        d.iso[keep], d.year[keep];
                        sigma_nu=Float64.(d.v2x_polyarchy_sd[keep]), pilot=:point)
-    @test rep.statistic.lambda_hat ≈ 0.8984 atol = 1e-3
+    @test rep.statistic.lambda_hat ≈ 0.8937 atol = 1e-3
 
     # Paper A empirical application (Piotroski F-Score / Visegrad panel) drives
     # leverage_report directly from the bundled object, reproducing Table 2/3.

@@ -32,6 +32,13 @@ The remaining files are the exact analysis extracts used by the papers:
 | TWFE flagged design | `divorce_panel.csv` | `divorce` | Stevenson--Wolfers data distributed by `bacondecomp` |
 | TWFE headline design | `minimum_wage_panel.csv` | `minimum_wage` | Callaway--Sant'Anna public minimum-wage replication panel |
 
+The FE--EIV panel uses the direct posterior-standard-deviation variables from
+the V-Dem release at commit `f4dd26922e658442524dfd954bf14f7ebe622d5d`.
+The downloaded `vdem.RData` artifact has SHA-256
+`39b412d39a061c18f20c98e4ad4d6355b05a0441df31be4ee9aec420dc3d95ea`;
+`data/eiv_vdem_SOURCE.txt` records the pinned URL and digest. Credible-interval
+half-widths are not used as substitutes for posterior SDs.
+
 Julia keeps the V-Dem gate-1 subset as a separate CSV because it is also a
 published-number fixture; R's `vdem` object contains the columns needed to
 recreate that subset. Dataset help, the papers, and their replication archives

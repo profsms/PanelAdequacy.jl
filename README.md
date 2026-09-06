@@ -11,7 +11,7 @@ Install the current release from GitHub:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.7.0")
+Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.7.1")
 ```
 
 After registration in Julia General, `Pkg.add("PanelAdequacy")` will be sufficient.

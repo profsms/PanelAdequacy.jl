@@ -19,7 +19,7 @@ using Statistics
 using LinearAlgebra
 using Random
 using SparseArrays
-using SpecialFunctions: erfc, erfcinv
+using SpecialFunctions: erfc, erfcinv, gamma_inc, loggamma
 
 export DesignSummary, design_summary, twoway_demean, multiway_demean, fe_dimension
 export AdequacyReport, show_notes
@@ -160,9 +160,25 @@ function _statistic_lines(pathology::Symbol, s::NamedTuple)
             push!(lines, l)
         end
         if haskey(s, :K_lower_gt) && isfinite(s.K_lower_gt)
-            push!(lines, @sprintf("Boundary-robust group-time K interval (%.1f%%, HC2): [%.3f, %.3f]; HC3 [%.3f, %.3f]",
-                                  100*(1-s.gamma), s.K_lower_gt, s.K_upper_gt,
-                                  s.K_lower_gt_hc3, s.K_upper_gt_hc3))
+            selected = haskey(s, :selected_class) ? String(s.selected_class) : "group_time"
+            push!(lines, @sprintf("Selected heterogeneity class: %s (each bound is a separate one-sided %.1f%% statement)",
+                                  selected, 100*(1-s.gamma)))
+            for (key, label) in ((:coh, "cohort"), (:evt, "event-time"),
+                                 (:cmb, "additive"), (:gt, "group-time"))
+                lower = getproperty(s, Symbol("K_lower_", key))
+                upper = getproperty(s, Symbol("K_upper_", key))
+                verdict = getproperty(s, Symbol("verdict_", key))
+                if isfinite(upper)
+                    push!(lines, @sprintf("  %s: lower %.3f; upper %.3f; %s",
+                                          label, lower, upper, String(verdict)))
+                else
+                    expected = getproperty(s, Symbol("expected_rank_", key))
+                    rank = getproperty(s, Symbol("covariance_rank_", key))
+                    push!(lines, @sprintf("  %s: lower %.3f; upper unavailable (covariance rank %d/%d); %s",
+                                          label, lower, rank, expected,
+                                          String(verdict)))
+                end
+            end
         end
         if haskey(s, :boot) && s.boot !== nothing
             b = s.boot

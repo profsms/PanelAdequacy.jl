@@ -42,11 +42,13 @@ include("published_tests.jl")
 
 @testset "bundled datasets API" begin
     @test Set(datasets()) == Set(["vdem_gate1", "eiv_vdem_panel",
-        "psid_wages_panel", "castle_panel", "divorce_panel", "minimum_wage_panel", "f_score_panel",
+        "psid_wages_panel", "castle_panel", "divorce_panel", "minimum_wage_panel",
+        "brazil_property_tax_panel", "f_score_panel",
         "grunfeld_panel", "twins"])
     @test isfile(datapath("castle_panel"))
     @test isfile(datapath("castle_panel.csv"))
     @test isfile(datapath("minimum_wage_panel.csv"))
+    @test isfile(datapath("brazil_property_tax_panel.csv"))
     @test_throws ArgumentError datapath("nope")
     d = load_dataset("eiv_vdem_panel")
     @test haskey(d, :iso) && haskey(d, :v2x_polyarchy)
@@ -62,6 +64,10 @@ include("published_tests.jl")
     @test length(mw.y) == 15_988
     @test length(unique(mw.uid)) == 2_284
     @test length(unique(mw.tid)) == 7
+    brazil = load_dataset("brazil_property_tax_panel")
+    @test length(brazil.y) == 34_080
+    @test length(unique(brazil.uid)) == 2_840
+    @test length(unique(brazil.tid)) == 12
     # the bundled dataset drives the diagnostic directly (article-reproducibility)
     keep = .!ismissing.(d.ly) .& .!ismissing.(d.v2x_polyarchy) .& .!ismissing.(d.v2x_polyarchy_sd)
     rep = eiv_adequacy(Float64.(d.ly[keep]), Float64.(d.v2x_polyarchy[keep]),

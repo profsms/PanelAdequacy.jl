@@ -11,7 +11,7 @@ Install the current release from GitHub:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.7.1")
+Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.8.0")
 ```
 
 After registration in Julia General, `Pkg.add("PanelAdequacy")` will be sufficient.
@@ -34,11 +34,11 @@ report = cycle_report(d.invest, d.capital, d.firm, d.year; controls=d.value, int
 - `reliability_from_repeats(first, second)` estimates within reliability from identically projected repeated measurements; use its equal-variance option only when that added restriction is defensible.
 - `twfe_adequacy(y, unit, time, first_treat)` reports the saturated group-time
   envelope, the cohort/event/additive restricted ladder, and a signed
-  directional plug-in. Its formal decision uses a boundary-robust one-sided
-  confidence bound for the projected group-time norm; trace-debiased point
-  envelopes are descriptive. Direct CR1 cluster-score normalization is the
-  default; `cluster=:ar1`, `cluster=:iid`, and a positive user-supplied `psi`
-  are sensitivity routes.
+  directional plug-in. Its formal decision uses a multiplier lower test and a
+  covariance-aware projected-Wald upper certificate for a prespecified class;
+  trace-debiased point envelopes are descriptive. Direct CR1 cluster-score
+  normalization is the default; `cluster=:ar1`, `cluster=:iid`, and a positive
+  user-supplied `psi` are sensitivity routes.
 
 Default `cycle_report` rendering is concise. Detailed caveats remain available in `report.notes` and as a numbered display through `show_notes(report)`.
 
@@ -64,11 +64,14 @@ On Julia 1.9+, package extensions add these methods for `GLM.jl` linear models a
 
 Measurement-error reports can additionally return `CERTIFIED` when the supplied reliability lower bound clears the certified breakdown. The report prints `gamma_beta`, `gamma_lambda`, and their total false-certification bound; the legacy keyword `gamma` denotes `gamma_beta`.
 
-TWFE reports use `CERTIFIED` only when the upper endpoint of the projected-norm
-confidence set lies below the exact-normal threshold, `FLAGGED` when its lower
-endpoint lies above the threshold, and `INCONCLUSIVE` when the interval crosses
-it. These labels concern uniform certification over the calibrated class; they
-do not assert that the realized profile is a worst-case direction.
+TWFE reports use `CERTIFIED` only when the covariance-aware upper bound for the
+selected class lies below the exact-normal threshold, `FLAGGED` when the
+regular one-sided lower bound lies above it, and `INCONCLUSIVE` otherwise. A
+rank-deficient projected covariance cannot support an upper certificate. Set
+`heterogeneity_class` before examining the outcome; `q_band` requests the more
+general but less powerful confidence-ball fallback without changing the main
+verdict. These labels concern uniform certification over the calibrated class;
+they do not assert that the realized profile is a worst-case direction.
 
 ## Design-Only Use
 
@@ -78,7 +81,7 @@ do not assert that the realized profile is a worst-case direction.
 
 The sibling R package is [panelcert](https://github.com/profsms/panelcert). Fixed CSV designs and CI enforce agreement to `1e-12` on numerical outputs and exact agreement on integer fields, verdicts, and packed supports.
 
-Dataset access follows language conventions: Julia exposes `datasets()`, `datapath()`, and `load_dataset()`; R exposes the same bundled panels through `LazyData`. Redistributable paper panels, including V-Dem, repeated-report twins, the 2,284-county minimum-wage application, and the public-domain canonical 11-firm Grunfeld showcase, are bundled for offline replication. `DATA_SOURCES.md` records pinned provenance and explains why the KSS test extract uses a checksum-pinned direct download instead.
+Dataset access follows language conventions: Julia exposes `datasets()`, `datapath()`, and `load_dataset()`; R exposes the same bundled panels through `LazyData`. Redistributable paper panels, including V-Dem, repeated-report twins, the 2,284-county minimum-wage application, the 2,840-municipality Brazil property-tax reanalysis, and the public-domain canonical 11-firm Grunfeld showcase, are bundled for offline replication. `DATA_SOURCES.md` records pinned provenance and explains why the KSS test extract uses a checksum-pinned direct download instead.
 
 ## Citation
 

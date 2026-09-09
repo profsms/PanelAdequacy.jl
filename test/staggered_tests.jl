@@ -76,10 +76,11 @@ end
         @test any(occursin("always-treated", n) for n in rep.notes)
     end
 
-    @testset "castle inference: projected-norm upper bound certifies" begin
+    @testset "castle inference: additive certifies and saturated is rank-inconclusive" begin
         castle = read_panel("castle_panel.csv")
         rep = twfe_adequacy(castle.y, castle.unit, castle.time, castle.ft;
-                            bootstrap=299, seed=20260715)
+                            bootstrap=299, seed=20260715,
+                            q_band=50.0^(-1/4))
         st = rep.statistic
         @test st.beta ≈ 0.081812 rtol = 1e-3          # published ~8% homicide increase
         @test st.sigma ≈ 0.186992 rtol = 1e-3
@@ -96,17 +97,27 @@ end
         @test st.pilot_gt ≈ 0.74787382 atol = 1e-7
         @test rep.eta ≈ 0.08610202 atol = 1e-7
         @test st.size_gt ≈ 0.05085 atol = 2e-3
-        @test st.K_upper_gt < rep.threshold
-        # HC3 is a boundary diagnostic here; it can land on either side of eta†
-        # across Julia/OS combinations while still remaining near the threshold.
-        @test st.K_upper_gt_hc3 ≈ rep.threshold atol = 0.02
+        @test isnan(st.K_upper_gt)
+        @test st.covariance_rank_gt == 18
+        @test st.expected_rank_gt == 19
+        @test st.K_upper_cmb ≈ 0.236 atol = 2e-3
+        @test st.covariance_rank_cmb == st.expected_rank_cmb
+        @test st.verdict_cmb === :CERTIFIED
+        @test st.verdict_gt === :INCONCLUSIVE
+        @test isfinite(st.K_ball_upper_gt)
         @test st.eta_directional ≈ -0.0134423 atol = 1e-5
         @test st.size_directional ≈ 0.0500207 atol = 1e-5
         @test st.directional_alignment ≈ -0.164229 atol = 1e-5
         @test st.sign_reversal_rms ≈ 0.386972 atol = 1e-5
         @test st.size_realized ≈ st.size_directional atol = 1e-12
-        @test rep.verdict === :CERTIFIED
+        @test rep.verdict === :INCONCLUSIVE
         @test st.boot !== nothing && st.boot.norm !== nothing
+    end
+
+    @testset "noncentral chi-square inversion matches a reference value" begin
+        @test PD._ncx2_cdf(5.0, 3, 2.0) ≈ 0.5934051800831556 atol = 2e-14
+        @test PD._noncentrality_upper(5.0, 3, 0.05) ≈
+              12.381514467876382 atol = 2e-12
     end
 
     @testset "divorce point envelope is large but norm bound is inconclusive" begin
@@ -129,7 +140,10 @@ end
         @test st.pilot_gt ≈ 6.59941945 atol = 1e-7
         @test rep.eta ≈ 2.48546963 atol = 1e-7
         @test st.size_gt > 0.65
-        @test st.K_lower_gt < rep.threshold < st.K_upper_gt
+        @test st.K_lower_gt < rep.threshold
+        @test isnan(st.K_upper_gt)
+        @test st.covariance_rank_gt == 49
+        @test st.expected_rank_gt == 167
         @test st.size_coh > 0.10 && st.size_evt > 0.10 # every subspace exceeds the bound
         @test st.size_cmb >= st.size_coh - 1e-9        # nesting: combined dominates
         @test rep.verdict === :INCONCLUSIVE
@@ -137,7 +151,7 @@ end
         @test any(occursin("fixed-T", n) for n in rep.notes)
     end
 
-    @testset "minimum-wage headline reproduces the JAE point diagnostics" begin
+    @testset "minimum-wage headline reproduces the current point diagnostics" begin
         mw = read_panel("minimum_wage_panel.csv")
         rep = twfe_adequacy(mw.y, mw.unit, mw.time, mw.ft;
                             controls=:never, bootstrap=19, seed=20260828)
@@ -159,6 +173,20 @@ end
         @test st.directional_alignment ≈ 0.92476056 atol = 1e-7
         @test st.sign_reversal_rms ≈ 0.13576699 atol = 1e-7
         @test rep.verdict === :FLAGGED
+    end
+
+    @testset "Brazil large-panel path stays compressed and flags every class" begin
+        d = read_panel("brazil_property_tax_panel.csv")
+        rep = twfe_adequacy(d.y, d.unit, d.time, d.ft;
+                            bootstrap=19, seed=20260907)
+        st = rep.statistic
+        @test st.beta ≈ 0.05934601 atol = 1e-7
+        @test st.Gamma ≈ 1.13807909 atol = 1e-7
+        @test st.Gamma_coh ≈ 0.46277016 atol = 1e-7
+        @test st.neg_share ≈ 0.17336022 atol = 1e-7
+        @test st.K_lower_coh > rep.threshold
+        @test (st.verdict_coh, st.verdict_evt, st.verdict_cmb, st.verdict_gt) ==
+              (:FLAGGED, :FLAGGED, :FLAGGED, :FLAGGED)
     end
 
     @testset "exchangeable psi identity (Thm. thm-cluster(a): psi = 1 - rho_c)" begin
@@ -183,11 +211,13 @@ end
 
         castle = read_panel("castle_panel.csv")
         out = sprint(show, MIME("text/plain"),
-                     twfe_adequacy(castle.y, castle.unit, castle.time, castle.ft; bootstrap=99))
+                     twfe_adequacy(castle.y, castle.unit, castle.time, castle.ft;
+                                   heterogeneity_class=:additive, bootstrap=99))
         @test occursin("TWFE Heterogeneity", out)
         @test occursin("restricted ladder", out)
         @test occursin("Point worst-case envelopes", out)
-        @test occursin("Boundary-robust group-time K interval", out)
+        @test occursin("Selected heterogeneity class: additive", out)
+        @test occursin("upper unavailable (covariance rank 18/19)", out)
         @test occursin("Directional plug-in", out)
         @test !occursin("Realized-profile", out)
         @test occursin("VERDICT: FORMALLY CERTIFIED", out)
@@ -197,11 +227,15 @@ end
         @test_throws ArgumentError twfe_adequacy(castle.y, castle.unit, castle.time,
                                                  castle.ft; cluster=:bad)
         @test_throws ArgumentError twfe_adequacy(castle.y, castle.unit, castle.time,
-                                                 castle.ft; controls=:bad)
+                                                  castle.ft; controls=:bad)
+        @test_throws ArgumentError twfe_adequacy(castle.y, castle.unit, castle.time,
+                                                  castle.ft; heterogeneity_class=:bad)
         @test_throws ArgumentError twfe_adequacy(castle.y, castle.unit, castle.time,
                                                  castle.ft; psi=-1.0)
         @test_throws ArgumentError twfe_adequacy(castle.y, castle.unit, castle.time,
-                                                 castle.ft; gamma=0.6)
+                                                  castle.ft; gamma=0.6)
+        @test_throws ArgumentError twfe_adequacy(castle.y, castle.unit, castle.time,
+                                                  castle.ft; q_band=1.0)
     end
 
 end

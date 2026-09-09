@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.0 - 2026-09-08
+
+- Replace the TWFE confidence-ball upper decision with covariance-aware
+  projected-Wald noncentral-chi-square inversion. An upper certificate is now
+  issued only when the estimated score covariance spans the full prespecified
+  heterogeneity class; rank-deficient classes are structurally
+  `INCONCLUSIVE` unless the one-sided lower test already flags them.
+- Add `heterogeneity_class` so the report verdict can use a prespecified
+  saturated group-time, additive, cohort, or event-time class. Reports expose
+  separate lower bounds, upper bounds, ranks, and verdicts for all four.
+- Retain the regular multiplier/reverse-triangle lower test without the former
+  denominator buffer under the bounded local experiment. `q_band` exposes the
+  more general, less powerful full confidence-ball fallback separately and it
+  never determines the main verdict.
+- Update the castle-doctrine lock: the additive homicide class certifies with
+  an upper bound near 0.236, while the saturated class is rank-inconclusive at
+  18/19. The divorce saturated class is rank-inconclusive at 49/167.
+- Evaluate covariance traces and projected scores in group-time coordinates,
+  eliminating the quadratic treated-cell covariance allocation. Bundle the
+  reproducible 2,840-municipality Brazil property-tax extract and lock the
+  finding that every class is flagged by its lower test.
+
 ## 0.7.1 - 2026-09-05
 
 - Use the exact leverage-weighted noise trace

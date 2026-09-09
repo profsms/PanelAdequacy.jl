@@ -1,13 +1,12 @@
 # =============================================================================
 # Module C — staggered-DiD / TWFE-heterogeneity adequacy
 # SOURCE: Paper C, "Positive Weights Do Not Certify TWFE Inference"
-# (paper_c_jae.tex and its
-# online supplement).
+# and its online supplement.
 #
 # Gamma, its restricted variants, the direct cluster-score normalization,
 # covariance-corrected pilots, the worst-case envelope and the directional
-# plug-in are implemented here. The three applications reproduce from panels
-# bundled with the package via reproduction/reproduce_with_package.jl.
+# plug-in are implemented here. The redistributable applications reproduce
+# from panels bundled with the package.
 #
 # Design statistics (pre-outcome, from the adoption pattern ALONE):
 #   Gamma      = sqrt(N1) ||w - u||_2,  w = Dt/n_w on treated cells, u = 1/N1
@@ -29,6 +28,11 @@
 #              estimated by the fixed-design wild cluster bootstrap. Subtracting
 #              an average of marginal variances (the legacy scalar shrinkage)
 #              under-removes the projected noise when the ATT(g,t) share controls.
+#   bounds     the lower test uses an HC2 multiplier radius and reverse triangle
+#              inequality. The upper certificate uses covariance-aware
+#              noncentral-chi-square inversion and requires full projected rank.
+#              HC3 is a sensitivity. The full confidence-ball construction is
+#              retained as an optional, more general but less powerful fallback.
 #   direction  eta_dir,S = sqrt(n_w) (w-u)'P_S Delta_hat / q_hat, a signed
 #              companion to (not a replacement for) the worst-case envelope.
 #   bootstrap  fixed-design wild cluster bootstrap: D, w, Gamma_S held fixed,
@@ -150,6 +154,104 @@ _proj(B::AbstractMatrix, x::Union{AbstractVector,AbstractMatrix}) =
 "Hat matrix P_S = B (B'B)^+ B'."
 _hat(B::AbstractMatrix) = B * pinv(B' * B) * B'
 
+"Orthonormal basis for the centered column span of B."
+function _centered_basis(B::AbstractMatrix; tol::Real=1e-10)
+    Bc = B .- mean(B; dims=1)
+    F = svd(Bc)
+    cutoff = tol * max(maximum(F.S; init=0.0), 1.0)
+    keep = findall(>(cutoff), F.S)
+    isempty(keep) && return zeros(size(B, 1), 0)
+    return F.U[:, keep]
+end
+
+"CDF of a noncentral chi-square via a centered Poisson mixture."
+function _ncx2_cdf(x::Real, df::Integer, ncp::Real)
+    x <= 0 && return x == 0 ? 0.0 : 0.0
+    df > 0 || throw(ArgumentError("chi-square degrees of freedom must be positive"))
+    ncp >= 0 || throw(ArgumentError("noncentrality must be nonnegative"))
+    half = Float64(ncp) / 2
+    half == 0 && return gamma_inc(Float64(df) / 2, Float64(x) / 2)[1]
+    mode = floor(Int, half)
+    log_weight = -half + mode * log(half) - loggamma(mode + 1)
+    weight_mode = exp(log_weight)
+    cdf = weight_mode * gamma_inc(Float64(df) / 2 + mode,
+                                  Float64(x) / 2)[1]
+    weight = weight_mode
+    for j in mode:-1:1
+        weight *= j / half
+        cdf += weight * gamma_inc(Float64(df) / 2 + j - 1,
+                                  Float64(x) / 2)[1]
+    end
+    weight = weight_mode
+    j = mode
+    while j < 100_000
+        j += 1
+        weight *= half / j
+        cdf += weight * gamma_inc(Float64(df) / 2 + j,
+                                  Float64(x) / 2)[1]
+        weight < 1e-15 && j > mode + 10 * sqrt(half + 1) && break
+    end
+    return clamp(cdf, 0.0, 1.0)
+end
+
+"One-sided upper confidence bound for chi-square noncentrality."
+function _noncentrality_upper(wald::Real, rank::Integer, error_prob::Real)
+    _ncx2_cdf(wald, rank, 0.0) <= error_prob && return 0.0
+    upper = max(1.0, Float64(wald) + rank)
+    while _ncx2_cdf(wald, rank, upper) > error_prob
+        upper *= 2
+        isfinite(upper) || error("failed to bracket noncentrality upper bound")
+    end
+    lower = 0.0
+    for _ in 1:100
+        middle = (lower + upper) / 2
+        if _ncx2_cdf(wald, rank, middle) > error_prob
+            lower = middle
+        else
+            upper = middle
+        end
+    end
+    return (lower + upper) / 2
+end
+
+"Covariance-aware upper bound for the Euclidean envelope K."
+function _equivalence_upper(delta_value, Q, A, score, Gamma, se, error_prob)
+    expected_rank = size(Q, 2)
+    if expected_rank == 0 || abs(Gamma) <= 1e-14
+        return (expected_rank=expected_rank, covariance_rank=0,
+                supported=true, wald=0.0, lambda_max=0.0,
+                ncp_upper=0.0, K_upper=0.0)
+    end
+    N1 = length(delta_value)
+    factor = Gamma / se
+    effect = vec(Q' * delta_value) / sqrt(N1)
+    score_coordinates = ((Q' * A) * score) / sqrt(N1)
+    covariance = factor^2 .* (score_coordinates * score_coordinates')
+    F = eigen(Symmetric((covariance + covariance') / 2))
+    largest = isempty(F.values) ? 0.0 : maximum(F.values)
+    tolerance = max(largest, floatmin(Float64)) *
+                max(size(covariance)...) * eps(Float64) * 100
+    keep = findall(>(tolerance), F.values)
+    covariance_rank = length(keep)
+    supported = covariance_rank == expected_rank
+    covariance_rank == 0 && return (
+        expected_rank=expected_rank, covariance_rank=0, supported=supported,
+        wald=NaN, lambda_max=NaN, ncp_upper=NaN, K_upper=NaN)
+    values = F.values[keep]
+    vectors = F.vectors[:, keep]
+    coordinates = vectors' * (factor .* effect)
+    wald = sum(abs2.(coordinates) ./ values)
+    lambda_max = maximum(values)
+    supported || return (
+        expected_rank=expected_rank, covariance_rank=covariance_rank,
+        supported=false, wald=wald, lambda_max=lambda_max,
+        ncp_upper=NaN, K_upper=NaN)
+    ncp_upper = _noncentrality_upper(wald, covariance_rank, error_prob)
+    return (expected_rank=expected_rank, covariance_rank=covariance_rank,
+            supported=true, wald=wald, lambda_max=lambda_max,
+            ncp_upper=ncp_upper, K_upper=sqrt(lambda_max * ncp_upper))
+end
+
 """
 Restricted design statistics and the cell bases. `g_cell`, `t_cell`, and
 `e_cell` are the cohort, calendar time, and event time of each treated cell.
@@ -218,8 +320,8 @@ function _cohort_means(gt::Dict{Tuple{Int,Int},Float64}, cohorts::Vector{Float64
 end
 
 # ------------------------------------------------------------------------------
-# Covariance-aware pilot (eq-pilot). `A` maps the (ordered) group-time vector to
-# treated cells; `Pt[s]` is the centered projector P_S~ = P_S - J/N1.
+# Covariance-aware pilot (eq-pilot). `A` maps the ordered group-time vector to
+# treated cells; `Q[s]` is an orthonormal basis for the centered class.
 # ------------------------------------------------------------------------------
 
 "Cell-level effect vector delta from the gt dict (NaN where unidentified)."
@@ -228,12 +330,15 @@ function _delta_cell(gt::Dict{Tuple{Int,Int},Float64}, g_cell::Vector{Float64},
     return Float64[get(gt, (Int(g_cell[k]), t_cell[k]), NaN) for k in 1:N1]
 end
 
-"Design-constant noise traces (1/N1) tr(P_S~ A Omega A' P_S~) per subspace."
+"Design-constant noise traces, evaluated without an N1-by-N1 covariance."
 function _cov_traces(A::Matrix{Float64}, Omega::Matrix{Float64},
-                     Pt::NamedTuple, N1::Int)
-    M = A * Omega * A'
-    return (coh = sum(Pt.coh .* M) / N1, evt = sum(Pt.evt .* M) / N1,
-            cmb = sum(Pt.cmb .* M) / N1, gt = sum(Pt.gt .* M) / N1)
+                     Q::NamedTuple, N1::Int)
+    traceone(q) = begin
+        coordinates = q' * A
+        sum((coordinates * Omega) .* coordinates) / N1
+    end
+    return (coh=traceone(Q.coh), evt=traceone(Q.evt),
+            cmb=traceone(Q.cmb), gt=traceone(Q.gt))
 end
 
 "Covariance-corrected c_S/sigma per subspace from a group-time dict."
@@ -374,7 +479,7 @@ function _wild_bootstrap(uid, tid, ftc, D, Dt, y, N, T, n_w, treated, N1,
     # Exact covariance under the fitted Rademacher wild-bootstrap distribution.
     Omega = score * score'
     return Omega, rows_sigma, rows_psi_ar1, rows_psi_direct, gtmat, keys_gt,
-           error_hc2, error_hc3
+           score_hc2, score_hc3, error_hc2, error_hc3
 end
 
 # ------------------------------------------------------------------------------
@@ -449,22 +554,30 @@ end
 
 """
     twfe_adequacy(y, unit, time, first_treat; alpha=0.05, delta=0.05,
-                  cluster=:direct, psi=nothing, controls=:not_yet,
-                  bootstrap=999, seed=20260715, gamma=0.05)
+                   cluster=:direct, psi=nothing, controls=:not_yet,
+                   heterogeneity_class=:group_time, bootstrap=999,
+                   seed=20260715, gamma=0.05, q_band=nothing)
         -> AdequacyReport
 
 Full TWFE-heterogeneity audit. Computes the restricted design-statistic
 ladder, direct CR1 rescaling `Gamma_{S,CR} = Gamma_S/sqrt(psi_hat)`, trace-
 debiased point pilots `c_S/sigma`, saturated and restricted point envelopes,
 and the signed directional plug-in. A fixed-design cluster-multiplier radius
-gives boundary-robust lower and upper bounds on the population envelope.
+gives the regular one-sided lower bound. The upper certificate inverts the
+noncentral chi-square law of the projected Wald statistic and is issued only
+when the score covariance has full rank in the prespecified class.
 
 - `bootstrap`: number of wild-cluster draws (`>0` enables the covariance
-  correction, descriptive summaries, and projected-norm bounds; `0` falls back
+  correction, descriptive summaries, and one-sided procedures; `0` falls back
   to the raw pilot without a certificate).
-- `gamma`: error probability for the projected-norm confidence set.
+- `gamma`: error probability for each reported one-sided procedure.
 - `cluster = :direct` (default), `:ar1`, or `:iid`; a positive `psi` overrides it.
 - `controls = :not_yet` (including never-treated) or `:never`.
+- `heterogeneity_class = :group_time` (default), `:additive`, `:cohort`, or
+  `:event` selects the prespecified class used for the report verdict.
+- `q_band`: optional relative half-width for the denominator band in the more
+  general full confidence-ball construction. It does not affect the main
+  decision-specific verdict.
 - Always-treated units are dropped (setup g >= 2), with a note.
 """
 function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
@@ -472,16 +585,22 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
                        alpha::Real=0.05, delta::Real=0.05,
                        cluster::Symbol=:direct, psi::Union{Nothing,Real}=nothing,
                        controls::Symbol=:not_yet,
+                       heterogeneity_class::Symbol=:group_time,
                        bootstrap::Integer=999, seed::Integer=20260715,
-                       gamma::Real=0.05)
+                       gamma::Real=0.05,
+                       q_band::Union{Nothing,Real}=nothing)
     cluster in (:direct, :ar1, :iid) ||
         throw(ArgumentError("cluster must be :direct, :ar1, or :iid"))
     controls in (:not_yet, :never) ||
         throw(ArgumentError("controls must be :not_yet or :never"))
+    heterogeneity_class in (:group_time, :additive, :cohort, :event) ||
+        throw(ArgumentError("heterogeneity_class must be :group_time, :additive, :cohort, or :event"))
     psi === nothing || (isfinite(psi) && psi > 0) ||
         throw(ArgumentError("psi must be positive and finite"))
     isfinite(gamma) && 0 < gamma < 0.5 ||
         throw(ArgumentError("gamma must be in (0, 0.5)"))
+    q_band === nothing || (isfinite(q_band) && 0 <= q_band < 1) ||
+        throw(ArgumentError("q_band must be nothing or in [0, 1)"))
     uid0, tid0, N0, T, ftc0 = _staggered_codes(unit, time, first_treat)
     n0 = length(uid0)
     length(y) == n0 || throw(ArgumentError("y must have length n = $n0"))
@@ -532,11 +651,11 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
     formal = nothing
     if bootstrap > 0 && !isempty(gt0)
         Omega, bsig, bpsi_ar1, bpsi_direct, bgt, keys_gt,
-        error_hc2, error_hc3 =
+        score_hc2, score_hc3, error_hc2, error_hc3 =
             _wild_bootstrap(uid, tid, ftc, D, Dt, yv, N, T, n_w, treated, N1,
                             g_cell, t_cell, d_K, gt0, Int(bootstrap), Int(seed),
                             controls)
-        # incidence A and centered projectors on the FIXED keys
+        # Incidence A and centered class bases on the fixed group-time keys.
         kidx = Dict(k => j for (j, k) in enumerate(keys_gt))
         m = length(keys_gt)
         A = zeros(N1, m)
@@ -544,10 +663,9 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
             key = (Int(g_cell[k]), t_cell[k])
             haskey(kidx, key) && (A[k, kidx[key]] = 1.0)
         end
-        J = fill(1.0 / N1, N1, N1)
-        Pt = (coh=_hat(G.Bcoh) .- J, evt=_hat(G.Bevt) .- J,
-              cmb=_hat(G.Bcmb) .- J, gt=_hat(G.Bgt) .- J)
-        traces = _cov_traces(A, Omega, Pt, N1)
+        Q = (coh=_centered_basis(G.Bcoh), evt=_centered_basis(G.Bevt),
+             cmb=_centered_basis(G.Bcmb), gt=_centered_basis(G.Bgt))
+        traces = _cov_traces(A, Omega, Q, N1)
         pilots = _cov_pilots(gt0, g_cell, t_cell, N1, bases, traces, n_w, sigma)
         size_pt = (coh=_noncentral_size(pilots.coh * CR.coh, alpha),
                    evt=_noncentral_size(pilots.evt * CR.evt, alpha),
@@ -576,50 +694,92 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
         envelope_hi=qfinite(draw_envelope, 0.975)
         envelope_p95=qfinite(draw_envelope, 0.95)
 
-        # Boundary-robust norm interval. The trace-debiased quadratic remains a
-        # descriptive point calibration; certification uses this radius.
+        # The trace-debiased quadratic remains a descriptive point calibration.
+        # The lower test uses reverse triangle inequality and the multiplier
+        # radius. The upper certificate uses projected-Wald noncentrality
+        # inversion and therefore checks covariance rank.
         if all(isfinite, delta0) && all(vec(sum(A; dims=2)) .== 1)
-            projected_scale(B) = sqrt(n_w / N1) * norm(_proj(B, delta0 .- mean(delta0)))
-            function error_norms(B, E)
-                cell_error = A * E
-                cell_error .-= mean(cell_error; dims=1)
-                projected = _proj(B, cell_error)
-                return sqrt(n_w / N1) .* [norm(view(projected, :, j))
-                                           for j in axes(projected, 2)]
+            projected_scale(q) = sqrt(n_w / N1) * norm(q' * (delta0 .- mean(delta0)))
+            function error_norms(q, E)
+                projected_coordinates = (q' * A) * E
+                return sqrt(n_w / N1) .* [norm(view(projected_coordinates, :, j))
+                                           for j in axes(projected_coordinates, 2)]
             end
-            scales = (coh=projected_scale(G.Bcoh), evt=projected_scale(G.Bevt),
-                      cmb=projected_scale(G.Bcmb), gt=projected_scale(G.Bgt))
-            radii = (coh=qfinite(error_norms(G.Bcoh, error_hc2), 1-gamma),
-                     evt=qfinite(error_norms(G.Bevt, error_hc2), 1-gamma),
-                     cmb=qfinite(error_norms(G.Bcmb, error_hc2), 1-gamma),
-                     gt=qfinite(error_norms(G.Bgt, error_hc2), 1-gamma))
-            radii_hc3 = (coh=qfinite(error_norms(G.Bcoh, error_hc3), 1-gamma),
-                         evt=qfinite(error_norms(G.Bevt, error_hc3), 1-gamma),
-                         cmb=qfinite(error_norms(G.Bcmb, error_hc3), 1-gamma),
-                         gt=qfinite(error_norms(G.Bgt, error_hc3), 1-gamma))
+            scales = (coh=projected_scale(Q.coh), evt=projected_scale(Q.evt),
+                      cmb=projected_scale(Q.cmb), gt=projected_scale(Q.gt))
+            radii = (coh=qfinite(error_norms(Q.coh, error_hc2), 1-gamma),
+                     evt=qfinite(error_norms(Q.evt, error_hc2), 1-gamma),
+                     cmb=qfinite(error_norms(Q.cmb, error_hc2), 1-gamma),
+                     gt=qfinite(error_norms(Q.gt, error_hc2), 1-gamma))
+            radii_hc3 = (coh=qfinite(error_norms(Q.coh, error_hc3), 1-gamma),
+                         evt=qfinite(error_norms(Q.evt, error_hc3), 1-gamma),
+                         cmb=qfinite(error_norms(Q.cmb, error_hc3), 1-gamma),
+                         gt=qfinite(error_norms(Q.gt, error_hc3), 1-gamma))
             q_scale = sigma * sqrt(psi_hat)
+            se_scale = q_scale / sqrt(n_w)
             lower = (coh=G.coh*max(0, scales.coh-radii.coh)/q_scale,
                      evt=G.evt*max(0, scales.evt-radii.evt)/q_scale,
                      cmb=G.cmb*max(0, scales.cmb-radii.cmb)/q_scale,
                      gt=G.gt*max(0, scales.gt-radii.gt)/q_scale)
-            upper = (coh=G.coh*(scales.coh+radii.coh)/q_scale,
-                     evt=G.evt*(scales.evt+radii.evt)/q_scale,
-                     cmb=G.cmb*(scales.cmb+radii.cmb)/q_scale,
-                     gt=G.gt*(scales.gt+radii.gt)/q_scale)
             lower_hc3 = (coh=G.coh*max(0, scales.coh-radii_hc3.coh)/q_scale,
-                         evt=G.evt*max(0, scales.evt-radii_hc3.evt)/q_scale,
-                         cmb=G.cmb*max(0, scales.cmb-radii_hc3.cmb)/q_scale,
-                         gt=G.gt*max(0, scales.gt-radii_hc3.gt)/q_scale)
-            upper_hc3 = (coh=G.coh*(scales.coh+radii_hc3.coh)/q_scale,
-                         evt=G.evt*(scales.evt+radii_hc3.evt)/q_scale,
-                         cmb=G.cmb*(scales.cmb+radii_hc3.cmb)/q_scale,
-                         gt=G.gt*(scales.gt+radii_hc3.gt)/q_scale)
+                          evt=G.evt*max(0, scales.evt-radii_hc3.evt)/q_scale,
+                          cmb=G.cmb*max(0, scales.cmb-radii_hc3.cmb)/q_scale,
+                          gt=G.gt*max(0, scales.gt-radii_hc3.gt)/q_scale)
+            equivalence = (
+                coh=_equivalence_upper(delta0, Q.coh, A, score_hc2, G.coh,
+                                       se_scale, gamma),
+                evt=_equivalence_upper(delta0, Q.evt, A, score_hc2, G.evt,
+                                       se_scale, gamma),
+                cmb=_equivalence_upper(delta0, Q.cmb, A, score_hc2, G.cmb,
+                                       se_scale, gamma),
+                gt=_equivalence_upper(delta0, Q.gt, A, score_hc2, G.gt,
+                                      se_scale, gamma))
+            equivalence_hc3 = (
+                coh=_equivalence_upper(delta0, Q.coh, A, score_hc3, G.coh,
+                                       se_scale, gamma),
+                evt=_equivalence_upper(delta0, Q.evt, A, score_hc3, G.evt,
+                                       se_scale, gamma),
+                cmb=_equivalence_upper(delta0, Q.cmb, A, score_hc3, G.cmb,
+                                       se_scale, gamma),
+                gt=_equivalence_upper(delta0, Q.gt, A, score_hc3, G.gt,
+                                      se_scale, gamma))
+            upper = (coh=equivalence.coh.K_upper, evt=equivalence.evt.K_upper,
+                     cmb=equivalence.cmb.K_upper, gt=equivalence.gt.K_upper)
+            upper_hc3 = (coh=equivalence_hc3.coh.K_upper,
+                         evt=equivalence_hc3.evt.K_upper,
+                         cmb=equivalence_hc3.cmb.K_upper,
+                         gt=equivalence_hc3.gt.K_upper)
+            ball_upper_raw = (coh=G.coh*(scales.coh+radii.coh)/q_scale,
+                              evt=G.evt*(scales.evt+radii.evt)/q_scale,
+                              cmb=G.cmb*(scales.cmb+radii.cmb)/q_scale,
+                              gt=G.gt*(scales.gt+radii.gt)/q_scale)
+            ball_upper_raw_hc3 = (
+                coh=G.coh*(scales.coh+radii_hc3.coh)/q_scale,
+                evt=G.evt*(scales.evt+radii_hc3.evt)/q_scale,
+                cmb=G.cmb*(scales.cmb+radii_hc3.cmb)/q_scale,
+                gt=G.gt*(scales.gt+radii_hc3.gt)/q_scale)
+            ball_lower = q_band === nothing ?
+                (coh=NaN, evt=NaN, cmb=NaN, gt=NaN) :
+                (coh=(1-q_band)*lower.coh, evt=(1-q_band)*lower.evt,
+                 cmb=(1-q_band)*lower.cmb, gt=(1-q_band)*lower.gt)
+            ball_upper = q_band === nothing ?
+                (coh=NaN, evt=NaN, cmb=NaN, gt=NaN) :
+                (coh=(1+q_band)*ball_upper_raw.coh,
+                 evt=(1+q_band)*ball_upper_raw.evt,
+                 cmb=(1+q_band)*ball_upper_raw.cmb,
+                 gt=(1+q_band)*ball_upper_raw.gt)
             formal = (confidence=1-Float64(gamma), scale=scales,
-                      radius=radii, radius_hc3=radii_hc3,
-                      lower=lower, upper=upper,
-                      lower_hc3=lower_hc3, upper_hc3=upper_hc3)
+                       radius=radii, radius_hc3=radii_hc3,
+                       lower=lower, upper=upper,
+                       lower_hc3=lower_hc3, upper_hc3=upper_hc3,
+                       equivalence=equivalence,
+                       equivalence_hc3=equivalence_hc3,
+                       ball_upper_raw=ball_upper_raw,
+                       ball_upper_raw_hc3=ball_upper_raw_hc3,
+                       ball_lower=ball_lower, ball_upper=ball_upper,
+                       q_band=q_band)
         else
-            push!(notes, "projected-norm certificate unavailable: the group-time estimator does not cover every treated cell")
+            push!(notes, "one-sided procedures unavailable: the group-time estimator does not cover every treated cell")
         end
 
         boot = (n=length(bsig), envelope_med=envelope_med,
@@ -643,7 +803,7 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
                 # v0.6 compatibility aliases: these are envelope fields.
                 cmb_med=envelope_med, cmb_lo=envelope_lo,
                 cmb_hi=envelope_hi, cmb_p95=envelope_p95)
-        push!(notes, @sprintf("point pilot: covariance trace computed from the fitted Rademacher score covariance; %d multiplier draws calibrate the %.1f%% HC2 projected-vector radius", boot.n, 100*(1-gamma)))
+        push!(notes, @sprintf("point pilot: covariance trace computed from the fitted Rademacher score covariance; %d multiplier draws calibrate the %.1f%% HC2 lower norm radius; the upper procedure uses projected-Wald noncentrality inversion", boot.n, 100*(1-gamma)))
     else
         # fallback: raw (uncorrected) projected dispersion, flagged
         rawpil(B) = begin
@@ -671,18 +831,45 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
         "fixed-T, many-cluster approximation is strained (G = %d, T = %d)", N, T))
 
     eta_dag = _eta_dagger(alpha, delta)
-    eta_gt = pilots.gt * CR.gt
-    verdict = if formal === nothing
-        :INCONCLUSIVE
-    elseif formal.upper.gt <= eta_dag
-        push!(notes, @sprintf("saturated group-time upper bound %.3f is below eta† %.3f", formal.upper.gt, eta_dag))
-        :CERTIFIED
-    elseif formal.lower.gt > eta_dag
-        push!(notes, @sprintf("saturated group-time lower bound %.3f exceeds eta† %.3f; uniform certification is withheld, not the published inference invalidated", formal.lower.gt, eta_dag))
-        :FLAGGED
-    else
-        push!(notes, @sprintf("saturated group-time interval [%.3f, %.3f] crosses eta† %.3f", formal.lower.gt, formal.upper.gt, eta_dag))
-        :INCONCLUSIVE
+    selected_key = (group_time=:gt, additive=:cmb, cohort=:coh,
+                    event=:evt)[heterogeneity_class]
+    class_names = (coh="cohort", evt="event-time", cmb="additive",
+                   gt="saturated group-time")
+    function decide(key)
+        formal === nothing && return :INCONCLUSIVE
+        lower = getproperty(formal.lower, key)
+        isfinite(lower) || return :INCONCLUSIVE
+        lower > eta_dag && return :FLAGGED
+        eq = getproperty(formal.equivalence, key)
+        upper = getproperty(formal.upper, key)
+        return eq.supported && isfinite(upper) && upper <= eta_dag ?
+               :CERTIFIED : :INCONCLUSIVE
+    end
+    class_verdicts = (coh=decide(:coh), evt=decide(:evt),
+                      cmb=decide(:cmb), gt=decide(:gt))
+    verdict = getproperty(class_verdicts, selected_key)
+    eta_selected = getproperty(pilots, selected_key) * getproperty(CR, selected_key)
+    if formal !== nothing
+        eq_selected = getproperty(formal.equivalence, selected_key)
+        class_name = getproperty(class_names, selected_key)
+        lower_selected = getproperty(formal.lower, selected_key)
+        upper_selected = getproperty(formal.upper, selected_key)
+        if verdict === :CERTIFIED
+            push!(notes, @sprintf("%s upper bound %.3f is below eta† %.3f",
+                                  class_name, upper_selected, eta_dag))
+        elseif verdict === :FLAGGED
+            push!(notes, @sprintf("%s lower bound %.3f exceeds eta† %.3f; uniform certification is withheld, not the published inference invalidated",
+                                  class_name, lower_selected, eta_dag))
+        elseif !eq_selected.supported
+            push!(notes, @sprintf("%s upper certificate unavailable: projected score covariance rank %d/%d; result is inconclusive for this structural reason",
+                                  class_name, eq_selected.covariance_rank,
+                                  eq_selected.expected_rank))
+        else
+            push!(notes, @sprintf("%s one-sided lower %.3f and upper %.3f do not determine a verdict at eta† %.3f",
+                                  class_name, lower_selected, upper_selected,
+                                  eta_dag))
+        end
+        q_band !== nothing && push!(notes, @sprintf("general confidence-ball fallback reported with denominator band q_band = %.4f; it does not determine the main verdict", q_band))
     end
     design = _design_summary_codes(uid, tid, N, T; xt=Dt)
     statistic = (Gamma=Gamma, Gamma_coh=G.coh, Gamma_evt=G.evt,
@@ -700,13 +887,35 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
                  att_target=all(isfinite, delta0) ? mean(delta0) : NaN,
                  pilot_coh=pilots.coh, pilot_evt=pilots.evt,
                  pilot_cmb=pilots.cmb, pilot_gt=pilots.gt,
-                 size_coh=size_pt.coh, size_evt=size_pt.evt,
-                 size_cmb=size_pt.cmb, size_gt=size_pt.gt,
-                 K_lower_gt=formal === nothing ? NaN : formal.lower.gt,
-                 K_upper_gt=formal === nothing ? NaN : formal.upper.gt,
+                  size_coh=size_pt.coh, size_evt=size_pt.evt,
+                  size_cmb=size_pt.cmb, size_gt=size_pt.gt,
+                  selected_class=heterogeneity_class,
+                  verdict_coh=class_verdicts.coh,
+                  verdict_evt=class_verdicts.evt,
+                  verdict_cmb=class_verdicts.cmb,
+                  verdict_gt=class_verdicts.gt,
+                  K_lower_coh=formal === nothing ? NaN : formal.lower.coh,
+                  K_upper_coh=formal === nothing ? NaN : formal.upper.coh,
+                  K_lower_evt=formal === nothing ? NaN : formal.lower.evt,
+                  K_upper_evt=formal === nothing ? NaN : formal.upper.evt,
+                  K_lower_cmb=formal === nothing ? NaN : formal.lower.cmb,
+                  K_upper_cmb=formal === nothing ? NaN : formal.upper.cmb,
+                  K_lower_gt=formal === nothing ? NaN : formal.lower.gt,
+                  K_upper_gt=formal === nothing ? NaN : formal.upper.gt,
                  K_lower_gt_hc3=formal === nothing ? NaN : formal.lower_hc3.gt,
-                 K_upper_gt_hc3=formal === nothing ? NaN : formal.upper_hc3.gt,
-                 gamma=Float64(gamma),
+                  K_upper_gt_hc3=formal === nothing ? NaN : formal.upper_hc3.gt,
+                  expected_rank_coh=formal === nothing ? 0 : formal.equivalence.coh.expected_rank,
+                  covariance_rank_coh=formal === nothing ? 0 : formal.equivalence.coh.covariance_rank,
+                  expected_rank_evt=formal === nothing ? 0 : formal.equivalence.evt.expected_rank,
+                  covariance_rank_evt=formal === nothing ? 0 : formal.equivalence.evt.covariance_rank,
+                  expected_rank_cmb=formal === nothing ? 0 : formal.equivalence.cmb.expected_rank,
+                  covariance_rank_cmb=formal === nothing ? 0 : formal.equivalence.cmb.covariance_rank,
+                  expected_rank_gt=formal === nothing ? 0 : formal.equivalence.gt.expected_rank,
+                  covariance_rank_gt=formal === nothing ? 0 : formal.equivalence.gt.covariance_rank,
+                  q_band=q_band === nothing ? NaN : Float64(q_band),
+                  K_ball_lower_gt=formal === nothing ? NaN : formal.ball_lower.gt,
+                  K_ball_upper_gt=formal === nothing ? NaN : formal.ball_upper.gt,
+                  gamma=Float64(gamma),
                  eta_directional=directional.eta,
                  size_directional=_noncentral_size(directional.eta, alpha),
                  directional_alignment=directional.alignment,
@@ -714,9 +923,10 @@ function twfe_adequacy(y::AbstractVector{<:Real}, unit::AbstractVector,
                  eta_real_cr=directional.eta,
                  size_realized=_noncentral_size(directional.eta, alpha),
                  controls=controls, boot=boot)
-    return AdequacyReport(:twfe_heterogeneity, design, statistic, eta_gt, eta_dag,
-                          eta_dag / CR.gt, size_pt.gt, verdict,
-                          Float64(alpha), Float64(delta), notes)
+    return AdequacyReport(:twfe_heterogeneity, design, statistic, eta_selected,
+                           eta_dag, eta_dag / getproperty(CR, selected_key),
+                           getproperty(size_pt, selected_key), verdict,
+                           Float64(alpha), Float64(delta), notes)
 end
 
 # ------------------------------------------------------------------------------

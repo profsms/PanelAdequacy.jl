@@ -14,3 +14,16 @@ julia --project=. parity/julia_emit.jl parity/julia.json parity/julia_packing.js
 Rscript parity/r_emit.R parity/r.json parity/r_packing.json
 python parity/compare.py parity/julia.json parity/r.json parity/julia_packing.json parity/r_packing.json
 ```
+
+## Stepped-wedge module (0.9.0)
+
+`sw_emit.jl` and `sw_emit.R` evaluate every case of the stepped-wedge reference
+file (`sw_reference.csv`, a verbatim copy of the frozen Python output of the
+Paper 1 project). `sw_compare.py` requires R, Julia and Python to agree to an
+absolute `1e-10`:
+
+```powershell
+julia --project=. parity/sw_emit.jl test/fixtures/sw_reference.csv parity/sw_julia.csv
+Rscript parity/sw_emit.R <panelcert>/tests/testthat/fixtures/sw_reference.csv parity/sw_r.csv
+python parity/sw_compare.py test/fixtures/sw_reference.csv parity/sw_r.csv parity/sw_julia.csv
+```

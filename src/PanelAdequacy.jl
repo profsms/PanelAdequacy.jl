@@ -11,6 +11,7 @@ Current source map:
 - *Breakdown Reliability for Saturated Fixed-Effect Inference* — measurement-error adequacy
 - staggered-DiD / TWFE-heterogeneity adequacy
 - diffuse companion — leverage / variance diagnostics
+- stepped-wedge design (Halkiewicz and Alexeev, arXiv:2610.35853) — exposure weights, adequacy radius, ETI cost, design search
 """
 module PanelAdequacy
 
@@ -34,6 +35,8 @@ export twfe_design, twfe_adequacy, twfe_gammas
 export cycle_report, cycle_capture, cycle_contrasts, contrast_system,
        support_compatibility, signflip_test, signflip_interval
 export datasets, datapath, load_dataset
+export sw_exposure_weights, sw_gamma, sw_radius, sw_eti_cost,
+       sw_design_search, sw_phi_nested
 
 include("design.jl")
 include("normal.jl")
@@ -43,6 +46,7 @@ include("staggered_weights.jl")
 include("cycle.jl")
 include("screen.jl")
 include("datasets.jl")
+include("stepped_wedge.jl")
 
 # =============================================================================
 # The unified result object (spec §2.2)

@@ -39,12 +39,13 @@ include("measurement_error_tests.jl")
 include("staggered_tests.jl")
 include("cycle_tests.jl")
 include("published_tests.jl")
+include("stepped_wedge_tests.jl")
 
 @testset "bundled datasets API" begin
     @test Set(datasets()) == Set(["vdem_gate1", "eiv_vdem_panel",
         "psid_wages_panel", "castle_panel", "divorce_panel", "minimum_wage_panel",
         "brazil_property_tax_panel", "f_score_panel",
-        "grunfeld_panel", "twins"])
+        "grunfeld_panel", "twins", "haines2017_trial1", "dots99_uganda"])
     @test isfile(datapath("castle_panel"))
     @test isfile(datapath("castle_panel.csv"))
     @test isfile(datapath("minimum_wage_panel.csv"))

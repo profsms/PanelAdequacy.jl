@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.0 - 2026-11-07
+
+- Add the stepped-wedge design module (Halkiewicz and Alexeev, arXiv:2610.35853):
+  `sw_exposure_weights`, `sw_gamma`, `sw_radius`, `sw_eti_cost`,
+  `sw_design_search`, `sw_phi_nested`. It covers Hussey--Hughes GLS, TWFE,
+  nested-exchangeable correlation and optional unequal cluster-period sizes.
+- Bundle `haines2017_trial1` and `dots99_uganda` (CC BY 4.0 data, not MIT; see
+  `DATA_SOURCES.md`).
+- Tests reproduce the closed forms (T = 3--10) and the paper's reference
+  numbers, with R/Julia/Python parity at 1e-10.
+
 ## 0.8.0 - 2026-09-08
 
 - Replace the TWFE confidence-ball upper decision with covariance-aware

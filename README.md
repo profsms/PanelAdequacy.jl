@@ -11,7 +11,7 @@ Install the current release from GitHub:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.8.0")
+Pkg.add(url="https://github.com/profsms/PanelAdequacy.jl", rev="v0.9.0")
 ```
 
 After registration in Julia General, `Pkg.add("PanelAdequacy")` will be sufficient.
@@ -49,6 +49,24 @@ The regression diagnostics accept `controls=` for numeric nuisance covariates. E
 Julia's `Base.applicable` is a builtin, so the pre-flight check uses the qualified spelling `PanelAdequacy.applicable(x, unit, time)`; it reports structural binary-treatment granularity failures before packing.
 
 On Julia 1.9+, package extensions add these methods for `GLM.jl` linear models and `FixedEffectModels.jl`. GLM methods take the fitted model plus `unit` and `time`; because a `FixedEffectModel` intentionally does not retain its source table, its methods also require the exact estimation-sample table and explicit `y`, `x`, `unit`, and `time` column symbols.
+
+## Stepped-Wedge Design (0.9.0)
+
+Design-stage diagnostics for stepped-wedge and wait-list designs (Halkiewicz
+and Alexeev, arXiv:2610.35853). A design gives the cluster counts for start
+periods `2..T`, followed by the number wait-listed.
+
+```julia
+sw_radius(; design=[6, 6, 6, 6, 0], phi=2)          # 0.133: complete wedge
+sw_eti_cost([6, 6, 1, 0, 11]; phi=2).eti_cost        # 1.23: front-loaded hybrid
+sw_design_search(24, 5; cap=6, max_wait=12, phi=2).frontier
+sw_phi_nested(0.05, 0.5, 20)                         # nested-exchangeable phi'
+```
+
+`sw_exposure_weights` and `sw_eti_cost` accept `estimator=:TWFE` and an
+optional `sizes` matrix of unequal cluster-period sizes. The bundled
+`haines2017_trial1` and `dots99_uganda` data are CC BY 4.0 (see
+`DATA_SOURCES.md`).
 
 ## Packing Methods
 

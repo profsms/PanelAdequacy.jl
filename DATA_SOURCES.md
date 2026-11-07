@@ -75,3 +75,29 @@ bundled: its public upstream repository does not state a redistribution license.
 The Paper A replication archive instead provides a commit-pinned downloader and
 verifies the source file's SHA-256 digest
 `93e57a413a8cfccdcb043c5d793105a67b2dc9ebd27d5d3a4f1800abf89a2241`.
+
+## Stepped-wedge trial extracts (CC BY 4.0)
+
+Added in 0.9.0 for the stepped-wedge module (Halkiewicz and Alexeev,
+arXiv:2610.35853). Both files come from PLOS Medicine Supporting Information.
+PLOS publishes its articles under the Creative Commons Attribution 4.0
+licence, and its terms of use extend that licence to accompanying materials.
+**These data are licensed CC BY 4.0, not MIT.** Reuse requires citing the
+original articles below.
+
+| R object | Julia file | Source |
+|---|---|---|
+| `haines2017` | `haines2017_trial1.csv` | Haines et al. (2017), *PLOS Medicine* 14(10): e1002412, doi:10.1371/journal.pmed.1002412; S2 Data, doi:10.1371/journal.pmed.1002412.s002 |
+| `dots99` | `dots99_uganda.csv` | Cattamanchi et al. (2021), *PLOS Medicine* 18(5): e1003628, doi:10.1371/journal.pmed.1003628; S1 Data, doi:10.1371/journal.pmed.1003628.s002 (also figshare item 14550544) |
+
+`data-raw/make_sw_trials.py` (in the R package `panelcert`) builds both CSVs from the unmodified downloads:
+
+- **`haines2017`:** keeps only the Trial 1 rows (`study1 == 1`) and the variables `index_ward`, `site`, `sw_step`, `no_we_exposure` and `acute_los`, plus the derived first-treated period `start`. No identifiers, dates or other patient fields are retained.
+- **`dots99`:** keeps all rows and columns, renamed to snake_case. Commas inside text labels are replaced by semicolons.
+
+Source and derived-file digests (SHA-256):
+
+- Haines S2 xlsx `bcb1b478e0ff930f296efca5ce915252c2ecd016463ae351262ad7ae4ec2b9c4` → `haines2017_trial1.csv` `488cd006280824fcdd02c3583ccab6cec365a9ac3624a691de44355a54577858` (14,834 rows).
+- 99DOTS S1 xlsx `d52f0c43fae2edcafe333bc6a8d854aae1cb2b0e7d78004096c713c132ca0019` (MD5 `66e766b4e2ecad5157d4b79d93f84cd4`, matching figshare) → `dots99_uganda.csv` `6186092f3ebe2e9268efae091669e721864cd4509b003ed77a0223abfd2e42f0` (2,224 rows).
+
+The stepped-wedge test fixture `test/fixtures/sw_reference.csv` is a verbatim copy of the frozen Python reference output `2026-11-07_sw_package_reference.csv` in the Paper 1 project (`02_analysis/code/sw_package_reference.py`).
